@@ -1,0 +1,1843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Room — AI Communication Simulator</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  :root {
+    --bg:#0E141A; --panel:#161F29; --panel2:#1C2732; --panel3:#233040;
+    --line:#2A3742; --lineSoft:#212C36; --ink:#EAEEF1; --muted:#93A0AC;
+    --faint:#66727E; --gold:#E0A75E; --goldDim:#8a6a3f; --teal:#6FB4A6;
+    --rose:#D98A7E; --green:#84C29B;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'IBM Plex Sans', system-ui, sans-serif; color: var(--ink);
+    background:
+      radial-gradient(1100px 600px at 78% -8%, #16222e 0%, transparent 55%), var(--bg);
+    min-height: 100vh;
+  }
+  ::selection { background: var(--gold); color: #221604; }
+  .csbtn:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+  .csbtn:active:not(:disabled) { transform: translateY(0); }
+  .cs-card { transition: border-color .18s ease, transform .18s ease, background .18s ease; }
+  .cs-card:hover { border-color: var(--goldDim) !important; transform: translateY(-2px); }
+  textarea.cs-input, input.cs-input, select.cs-input {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 14.5px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 15px; width: 100%; resize: vertical; outline: none; line-height: 1.55;
+  }
+  textarea.cs-input:focus, input.cs-input:focus, select.cs-input:focus { border-color: var(--gold); }
+  textarea.cs-input::placeholder, input.cs-input::placeholder { color: var(--faint); }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 8px; }
+  .msg-in { animation: fadeUp .38s cubic-bezier(.2,.7,.2,1) both; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes breathe { 0%,100% { transform: scale(1); opacity:.7 } 50% { transform: scale(1.09); opacity:.25 } }
+  .ring-breathe { animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0% { transform: scale(1); opacity:.7 } 100% { transform: scale(1.35); opacity:0 } }
+  .ring-pulse { animation: pulse 1.8s ease-out infinite; }
+  @keyframes dots { 0%,80%,100% { opacity:.25 } 40% { opacity:1 } }
+  .dot { animation: dots 1.3s infinite; } .dot:nth-child(2){animation-delay:.18s} .dot:nth-child(3){animation-delay:.36s}
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes nod { 0%,100%{transform:translateY(0)} 50%{transform:translateY(3px)} }
+  .aud-nod { animation: nod 1.15s ease-in-out infinite; }
+  @keyframes floaty { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-2.5px)} }
+  .aud-float { animation: floaty 4.5s ease-in-out infinite; }
+  @keyframes pop { from{opacity:0;transform:scale(.9)} to{opacity:1;transform:scale(1)} }
+  .aud-thought { animation: pop .25s ease both; }
+  .cs-scroll::-webkit-scrollbar { width: 9px; }
+  .cs-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+  .cs-scroll::-webkit-scrollbar-track { background: transparent; }
+  #boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-family: 'Newsreader', serif; font-style: italic; font-size: 18px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="root"><div id="boot">Setting the room…</div></div>
+
+
+<script>
+window.startApp = function(){
+"use strict";
+const { useState, useEffect, useRef, useCallback } = React;
+/* ------------------------------------------------------------------ *
+ *  The Room — AI Workplace Communication Simulator (standalone)
+ *  Multi-provider: Anthropic (Claude), Google (Gemini), OpenAI-compatible.
+ * ------------------------------------------------------------------ */
+const T = {
+    bg: "#0E141A", panel: "#161F29", panel2: "#1C2732", panel3: "#233040",
+    line: "#2A3742", lineSoft: "#212C36", ink: "#EAEEF1", muted: "#93A0AC",
+    faint: "#66727E", gold: "#E0A75E", goldDim: "#8a6a3f", teal: "#6FB4A6",
+    rose: "#D98A7E", green: "#84C29B",
+};
+/* ------------------------------- icons ------------------------------- */
+const ICONS = {
+    mic: '<rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M8 21h8"/>',
+    micOff: '<path d="M9 9V6a3 3 0 0 1 6 0v3"/><path d="M5 10a7 7 0 0 0 11 5"/><path d="M12 17v4"/><path d="M8 21h8"/><line x1="3" y1="3" x2="21" y2="21"/>',
+    send: '<path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9 22 2Z"/>',
+    volume2: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
+    volumeX: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/>',
+    sliders: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+    x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    check: '<polyline points="20 6 9 17 4 12"/>',
+    arrowLeft: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+    play: '<polygon points="6 3 20 12 6 21 6 3" fill="currentColor" stroke="none"/>',
+    rotateCcw: '<polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/>',
+    chevronDown: '<polyline points="6 9 12 15 18 9"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/>',
+    wand: '<path d="M15 4V2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/>',
+    trendingUp: '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>',
+    users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    briefcase: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+    message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    quote: '<path d="M3 21c3 0 7-1 7-8V5H3v7h4c0 4-2 5-4 5z" fill="currentColor" stroke="none"/><path d="M14 21c3 0 7-1 7-8V5h-7v7h4c0 4-2 5-4 5z" fill="currentColor" stroke="none"/>',
+    circleDot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
+    doorOpen: '<path d="M13 4h3a2 2 0 0 1 2 2v14"/><path d="M2 20h20"/><path d="M13 20V3.5a.5.5 0 0 0-.7-.5L6 5v15"/>',
+    sparkles: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" fill="currentColor" stroke="none"/>',
+    loader: '<line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.9" y1="4.9" x2="7.8" y2="7.8"/><line x1="16.2" y1="16.2" x2="19.1" y2="19.1"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.9" y1="19.1" x2="7.8" y2="16.2"/><line x1="16.2" y1="7.8" x2="19.1" y2="4.9"/>',
+};
+function Icon({ name, size = 18, color = "currentColor", strokeWidth = 2, style, className }) {
+    return React.createElement("svg", {
+        width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color,
+        strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", style, className,
+        dangerouslySetInnerHTML: { __html: ICONS[name] || "" },
+    });
+}
+/* ----------------------------- personalities ----------------------------- */
+const INTERVIEWERS = [
+    { id: "amara", name: "Amara Okafor", title: "HR Recruiter",
+        blurb: "Warm and encouraging. Culture, motivation, how you work with people.",
+        persona: "You are warm, personable and encouraging. You care about motivation, values, teamwork and whether the person will thrive here. You put people at ease, but you gently probe when an answer stays on the surface." },
+    { id: "wei", name: "Wei Zhang", title: "Technical Lead",
+        blurb: "Rigorous. Wants specifics, trade-offs and evidence.",
+        persona: "You are precise and technically rigorous. You push for specifics: what exactly did they do, what were the trade-offs, how did they measure it. Polite but exacting — vague claims get a follow-up asking for detail or numbers." },
+    { id: "diego", name: "Diego Marín", title: "Startup Founder",
+        blurb: "Fast, high-energy, mission-driven. A little unpredictable.",
+        persona: "You are a founder: fast-talking, high-energy, mission-driven and a bit unpredictable. You jump between big-picture vision and scrappy details. You love ownership and initiative and you get visibly excited or cool depending on the answer." },
+    { id: "priya", name: "Priya Nair", title: "Senior Manager",
+        blurb: "Structured. Leadership, stakeholders, prioritisation.",
+        persona: "You are a structured senior manager. You explore leadership, stakeholder management, prioritisation and judgement. You often connect the current answer back to something they said earlier and look for consistency." },
+    { id: "marcus", name: "Marcus Bell", title: "Skeptical Executive",
+        blurb: "Terse. Challenges everything. Wants outcomes.",
+        persona: "You are a skeptical, time-pressed executive. You are terse, you challenge claims, and you want outcomes, not activity. You sometimes go quiet and let a weak answer hang. Not rude, but hard to impress." },
+    { id: "lena", name: "Lena Fischer", title: "Quiet Observer",
+        blurb: "Mostly silent. Rare, sharp questions and long pauses.",
+        persona: "You are a quiet observer. You say very little — often just a short acknowledgement or a pause — and then, occasionally, ask one unusually sharp, probing question. You let silences sit so the candidate keeps talking." },
+    { id: "sanjay", name: "Sanjay Rao", title: "Analytical Interviewer",
+        blurb: "Data-driven. Edge cases, assumptions, numbers.",
+        persona: "You are highly analytical. You interrogate assumptions, chase edge cases and follow the numbers. If they give a metric you ask how it was calculated; if they generalise you ask for the specific case." },
+    { id: "chloe", name: "Chloé Dubois", title: "Fast-paced Consultant",
+        blurb: "Rapid-fire, case-style, values structure.",
+        persona: "You are a rapid-fire consultant. You move quickly, sometimes cut in, and you reward structured thinking. You ask them to frame problems and you notice when an answer rambles." },
+];
+const VOICE = {
+    amara: { rate: 1.0, pitch: 1.12 }, wei: { rate: 0.98, pitch: 0.96 }, diego: { rate: 1.13, pitch: 1.03 },
+    priya: { rate: 1.0, pitch: 1.06 }, marcus: { rate: 0.9, pitch: 0.84 }, lena: { rate: 0.92, pitch: 1.0 },
+    sanjay: { rate: 1.0, pitch: 0.98 }, chloe: { rate: 1.18, pitch: 1.08 },
+};
+const SCENARIOS = [
+    { id: "standup", name: "Daily stand-up", counterpart: "Tomas (team lead)",
+        blurb: "Give a crisp status: what's done, what's next, what's blocking you.",
+        goal: "give a concise, confident stand-up update and surface blockers clearly",
+        persona: "You are Tomas, a team lead running a fast daily stand-up with several engineers listening. You keep it moving, occasionally ask a pointed clarifying question about a blocker or a timeline, and you don't tolerate rambling." },
+    { id: "oneonone", name: "1:1 with your manager", counterpart: "Dana (your manager)",
+        blurb: "Talk growth, workload and what you need — as an equal.",
+        goal: "advocate for yourself clearly in a 1:1: progress, workload and what you need to grow",
+        persona: "You are Dana, a supportive but busy manager in a 1:1. You listen, ask how things are really going, probe gently on vague statements, and expect the person to bring their own agenda." },
+    { id: "feedback", name: "Give difficult feedback", counterpart: "Sam (your peer)",
+        blurb: "Deliver hard feedback so it lands without a fight.",
+        goal: "deliver difficult feedback with clarity and care so it is heard rather than resisted",
+        persona: "You are Sam, a colleague receiving critical feedback. You start a little defensive and may push back, but you can be brought around by feedback that is specific, fair and respectful." },
+    { id: "conflict", name: "Handle a conflict", counterpart: "Ravi (frustrated colleague)",
+        blurb: "Defuse tension and find a way forward.",
+        goal: "de-escalate a conflict, understand the other side, and move toward a resolution",
+        persona: "You are Ravi, a colleague who is frustrated and feels their work was overlooked. You are tense at first and test whether the person really listens before you soften." },
+    { id: "stakeholder", name: "Stakeholder update", counterpart: "Helen (senior stakeholder)",
+        blurb: "Brief a demanding stakeholder on progress and risk.",
+        goal: "brief a demanding stakeholder clearly on status, risks and decisions needed",
+        persona: "You are Helen, a demanding senior stakeholder. You want the headline first, you interrupt if buried in detail, and you press on risks, dates and what decision you're being asked for." },
+    { id: "negotiation", name: "Salary negotiation", counterpart: "Grace (hiring manager)",
+        blurb: "Make your case for a stronger offer, calmly.",
+        goal: "negotiate a stronger offer confidently while keeping the relationship warm",
+        persona: "You are Grace, a hiring manager who likes the candidate but has a budget. You probe their reasoning, apply gentle pressure, and respect a well-justified, non-defensive case." },
+];
+const LENGTHS = [
+    { id: "quick", label: "Quick", turns: 5, note: "~5 questions" },
+    { id: "standard", label: "Standard", turns: 8, note: "~8 questions" },
+    { id: "deep", label: "Deep", turns: 12, note: "~12 questions" },
+];
+const MOODS = {
+    warm: { label: "Warm", c: T.gold }, interested: { label: "Interested", c: T.teal },
+    impressed: { label: "Impressed", c: T.green }, neutral: { label: "Listening", c: "#8895A2" },
+    thinking: { label: "Thinking", c: "#9AA7B2" }, skeptical: { label: "Skeptical", c: T.rose },
+    challenging: { label: "Unconvinced", c: "#D8756A" }, distracted: { label: "Distracted", c: "#727E8B" },
+};
+const moodOf = (m) => MOODS[m] || MOODS.neutral;
+const FILLERS = ["um", "uh", "er", "like", "you know", "basically", "actually", "literally", "sort of", "kind of", "i mean", "so yeah", "right"];
+/* --------------------------- providers --------------------------- */
+const CFG = { provider: "gemini", apiKey: "", model: "gemini-2.5-flash", baseUrl: "https://openrouter.ai/api/v1" };
+const PROVIDERS = [
+    { id: "anthropic", label: "Anthropic — Claude", defModel: "claude-sonnet-5",
+        keyHint: "sk-ant-…", keyUrl: "console.anthropic.com" },
+    { id: "gemini", label: "Google — Gemini", defModel: "gemini-2.5-flash",
+        keyHint: "AIza…", keyUrl: "aistudio.google.com/apikey" },
+    { id: "openai", label: "OpenAI-compatible (Qwen, OpenRouter, …)", defModel: "qwen/qwen3-max",
+        keyHint: "sk-…", keyUrl: "your provider's console" },
+];
+const OAI_PRESETS = [
+    { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "qwen/qwen3-max" },
+    { name: "Qwen (Intl)", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+    { name: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+    { name: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+];
+async function callModel({ system, messages, maxTokens = 1000 }) {
+    const { provider, apiKey, model, baseUrl } = CFG;
+    if (!apiKey)
+        throw new Error("no_key");
+    if (provider === "gemini") {
+        const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent";
+        const body = {
+            system_instruction: { parts: [{ text: system }] },
+            contents: messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+            generationConfig: { maxOutputTokens: maxTokens, temperature: 0.9 },
+        };
+        const res = await fetch(url, { method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, body: JSON.stringify(body) });
+        if (!res.ok)
+            throw new Error("api_" + res.status);
+        const data = await res.json();
+        const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+        return parts.map((p) => p.text || "").join("").trim();
+    }
+    if (provider === "anthropic") {
+        const res = await fetch("https://api.anthropic.com/v1/messages", { method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": apiKey,
+                "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+            body: JSON.stringify({ model, max_tokens: maxTokens, system, messages }) });
+        if (!res.ok)
+            throw new Error("api_" + res.status);
+        const data = await res.json();
+        return (data.content || []).map((b) => (b.type === "text" ? b.text : "")).join("\n").trim();
+    }
+    // openai-compatible
+    const url = baseUrl.replace(/\/+$/, "") + "/chat/completions";
+    const res = await fetch(url, { method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+        body: JSON.stringify({ model, max_tokens: maxTokens, temperature: 0.9,
+            messages: [{ role: "system", content: system }, ...messages] }) });
+    if (!res.ok)
+        throw new Error("api_" + res.status);
+    const data = await res.json();
+    return ((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim();
+}
+function parseJSON(text, fallback) {
+    try {
+        let t = String(text).replace(/```json/gi, "").replace(/```/g, "").trim();
+        const s = t.indexOf("{"), e = t.lastIndexOf("}");
+        if (s >= 0 && e > s)
+            t = t.slice(s, e + 1);
+        return JSON.parse(t);
+    }
+    catch (_a) {
+        return fallback;
+    }
+}
+/* --------------------------- storage (localStorage) --------------------------- */
+const store = {
+    get(k, fb) { try {
+        const v = localStorage.getItem(k);
+        return v ? JSON.parse(v) : fb;
+    }
+    catch (_a) {
+        return fb;
+    } },
+    set(k, v) { try {
+        localStorage.setItem(k, JSON.stringify(v));
+    }
+    catch (_a) { } },
+};
+/* --------------------------- helpers --------------------------- */
+const countFillers = (text) => {
+    const t = " " + text.toLowerCase().replace(/[.,!?;:]/g, " ") + " ";
+    let n = 0;
+    const hits = {};
+    FILLERS.forEach((f) => {
+        const m = t.match(new RegExp("\\b" + f.replace(/ /g, "\\s+") + "\\b", "g"));
+        if (m) {
+            n += m.length;
+            hits[f] = (hits[f] || 0) + m.length;
+        }
+    });
+    return { n, hits };
+};
+const words = (s) => (s.trim() ? s.trim().split(/\s+/).length : 0);
+const clamp = (n) => Math.max(0, Math.min(100, Math.round(n || 0)));
+const initialsOf = (name) => name.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+/* ============================== UI atoms ============================== */
+function Eyebrow({ children, color }) {
+    return React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.18em",
+            textTransform: "uppercase", color: color || T.faint, fontWeight: 500 } }, children);
+}
+function Btn({ children, onClick, variant = "primary", disabled, style, icon, full }) {
+    const base = { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 9,
+        fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 14.5, fontWeight: 500, padding: "12px 20px",
+        borderRadius: 12, cursor: disabled ? "not-allowed" : "pointer", border: "1px solid transparent",
+        transition: "all .16s ease", width: full ? "100%" : "auto", opacity: disabled ? 0.45 : 1, letterSpacing: "0.01em" };
+    const variants = {
+        primary: { background: T.gold, color: "#221604" },
+        ghost: { background: "transparent", color: T.ink, border: "1px solid " + T.line },
+        subtle: { background: T.panel2, color: T.ink, border: "1px solid " + T.line },
+        quiet: { background: "transparent", color: T.muted, padding: "8px 12px" },
+    };
+    return React.createElement("button", { className: "csbtn", disabled: disabled, onClick: onClick, style: { ...base, ...variants[variant], ...style } },
+        icon && React.createElement(Icon, { name: icon, size: 16 }),
+        children);
+}
+function PresenceRing({ color, initials, state, size = 76 }) {
+    const c = color || T.gold;
+    return React.createElement("div", { style: { position: "relative", width: size, height: size, flexShrink: 0 } },
+        React.createElement("div", { className: state === "thinking" ? "ring-breathe" : "", style: { position: "absolute", inset: -4,
+                borderRadius: "50%", border: "2px solid " + c, opacity: state === "idle" ? 0.35 : 0.8 } }),
+        state === "speaking" && React.createElement("div", { className: "ring-pulse", style: { position: "absolute", inset: -4, borderRadius: "50%", border: "2px solid " + c } }),
+        React.createElement("div", { style: { position: "absolute", inset: 0, borderRadius: "50%",
+                background: "radial-gradient(circle at 32% 28%, " + T.panel3 + ", " + T.panel + ")",
+                display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Newsreader', serif",
+                fontSize: size * 0.34, color: T.ink, border: "1px solid " + T.line } }, initials));
+}
+function ScoreBar({ label, value, accent }) {
+    return React.createElement("div", { style: { marginBottom: 13 } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 6 } },
+            React.createElement("span", { style: { fontSize: 13.5, color: T.muted } }, label),
+            React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: T.ink } }, value)),
+        React.createElement("div", { style: { height: 6, borderRadius: 6, background: T.lineSoft, overflow: "hidden" } },
+            React.createElement("div", { style: { height: "100%", width: value + "%", borderRadius: 6, background: accent || T.gold,
+                    transition: "width .9s cubic-bezier(.2,.7,.2,1)" } })));
+}
+function Toggle({ on, onClick }) {
+    return React.createElement("button", { onClick: onClick, role: "switch", "aria-checked": on, style: { width: 46, height: 26, borderRadius: 20,
+            border: "none", cursor: "pointer", flexShrink: 0, background: on ? T.gold : T.panel3, position: "relative", transition: "background .18s" } },
+        React.createElement("span", { style: { position: "absolute", top: 3, left: on ? 23 : 3, width: 20, height: 20, borderRadius: "50%",
+                background: on ? "#221604" : T.muted, transition: "left .18s" } }));
+}
+/* ============================== App ============================== */
+function App() {
+    const [view, setView] = useState("home");
+    const [profile, setProfile] = useState(null);
+    const [sessions, setSessions] = useState([]);
+    const [session, setSession] = useState(null);
+    const [presSession, setPresSession] = useState(null);
+    const [showSettings, setShowSettings] = useState(false);
+    const [settings, setSettings] = useState({
+        provider: "gemini", apiKey: "", model: "gemini-2.5-flash",
+        baseUrl: "https://openrouter.ai/api/v1", hearThem: false,
+    });
+    useEffect(() => {
+        setProfile(store.get("ccs:profile", null));
+        setSessions(store.get("ccs:sessions", []));
+        const s = store.get("ccs:settings", null);
+        if (s)
+            setSettings((p) => ({ ...p, ...s }));
+    }, []);
+    useEffect(() => {
+        CFG.provider = settings.provider;
+        CFG.apiKey = settings.apiKey;
+        CFG.model = settings.model;
+        CFG.baseUrl = settings.baseUrl;
+        store.set("ccs:settings", settings);
+    }, [settings]);
+    const saveProfile = (p) => { setProfile(p); store.set("ccs:profile", p); };
+    const saveSessions = (s) => { setSessions(s); store.set("ccs:sessions", s); };
+    const hasKey = !!settings.apiKey.trim();
+    const setHearThem = (v) => setSettings((p) => ({ ...p, hearThem: v }));
+    return React.createElement("div", null,
+        React.createElement(TopBar, { view: view, setView: setView, onSettings: () => setShowSettings(true) }),
+        showSettings && React.createElement(Settings, { settings: settings, setSettings: setSettings, onClose: () => setShowSettings(false) }),
+        React.createElement("div", { style: { maxWidth: 1080, margin: "0 auto", padding: "0 22px 80px" } },
+            view === "home" && React.createElement(Home, { profile: profile, sessions: sessions, hasKey: hasKey, onSettings: () => setShowSettings(true), onStart: (cfg) => { setSession(cfg); setView("setup"); }, onStartPres: () => setView("pres"), onProgress: () => setView("progress") }),
+            view === "setup" && React.createElement(Setup, { base: session, hasKey: hasKey, onSettings: () => setShowSettings(true), onCancel: () => setView("home"), onBegin: (cfg) => { setSession(cfg); setView("room"); } }),
+            view === "room" && session && React.createElement(Room, { session: session, hearThem: settings.hearThem, setHearThem: setHearThem, onComplete: (f) => { setSession(f); setView("report"); } }),
+            view === "report" && session && React.createElement(Report, { session: session, profile: profile, saveProfile: saveProfile, sessions: sessions, saveSessions: saveSessions, onDone: () => setView("progress"), onAgain: () => setView("setup") }),
+            view === "pres" && React.createElement(PresStudio, { hearThem: settings.hearThem, onExit: () => setView("home"), onComplete: (ps) => { setPresSession(ps); setView("presReport"); } }),
+            view === "presReport" && presSession && React.createElement(PresReport, { pres: presSession, profile: profile, saveProfile: saveProfile, sessions: sessions, saveSessions: saveSessions, onAgain: () => setView("pres"), onDone: () => setView("progress") }),
+            view === "progress" && React.createElement(Progress, { profile: profile, sessions: sessions, onStart: () => setView("home") })));
+}
+function TopBar({ view, setView, onSettings }) {
+    return React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 20, background: "rgba(14,20,26,.82)",
+            backdropFilter: "blur(10px)", borderBottom: "1px solid " + T.lineSoft } },
+        React.createElement("div", { style: { maxWidth: 1080, margin: "0 auto", padding: "13px 22px", display: "flex",
+                alignItems: "center", justifyContent: "space-between" } },
+            React.createElement("button", { onClick: () => setView("home"), style: { background: "none", border: "none", cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 11, padding: 0 } },
+                React.createElement("div", { style: { width: 30, height: 30, borderRadius: 9, border: "1.5px solid " + T.gold,
+                        display: "flex", alignItems: "center", justifyContent: "center" } },
+                    React.createElement(Icon, { name: "circleDot", size: 15, color: T.gold })),
+                React.createElement("span", { style: { fontFamily: "'Newsreader', serif", fontSize: 18.5, color: T.ink } }, "The Room")),
+            React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "center" } },
+                [["home", "Studio"], ["progress", "Progress"]].map(([v, label]) => React.createElement("button", { key: v, onClick: () => setView(v), style: { background: view === v ? T.panel2 : "transparent",
+                        border: "none", color: view === v ? T.ink : T.muted, fontFamily: "'IBM Plex Sans', sans-serif",
+                        fontSize: 13.5, padding: "8px 14px", borderRadius: 9, cursor: "pointer" } }, label)),
+                React.createElement("button", { onClick: onSettings, "aria-label": "Settings", style: { background: "transparent", border: "none",
+                        color: T.muted, cursor: "pointer", padding: "8px 10px", borderRadius: 9, display: "flex", alignItems: "center" } },
+                    React.createElement(Icon, { name: "sliders", size: 17 })))));
+}
+/* ============================== Settings ============================== */
+function Settings({ settings, setSettings, onClose }) {
+    const [s, setS] = useState(settings);
+    const prov = PROVIDERS.find((p) => p.id === s.provider) || PROVIDERS[0];
+    const set = (k, v) => setS((p) => ({ ...p, [k]: v }));
+    const pickProvider = (id) => {
+        const p = PROVIDERS.find((x) => x.id === id);
+        setS((prev) => ({ ...prev, provider: id, model: p.defModel,
+            baseUrl: id === "openai" ? (prev.baseUrl || "https://openrouter.ai/api/v1") : prev.baseUrl }));
+    };
+    const save = () => { setSettings(s); onClose(); };
+    return React.createElement("div", { onClick: onClose, style: { position: "fixed", inset: 0, zIndex: 50, background: "rgba(6,10,14,.66)",
+            backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "64px 20px", overflowY: "auto" } },
+        React.createElement("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 520, background: T.panel,
+                border: "1px solid " + T.line, borderRadius: 18, padding: "24px 24px 26px" } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 } },
+                React.createElement("h3", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 22, margin: 0 } }, "Settings"),
+                React.createElement("button", { onClick: onClose, "aria-label": "Close", style: { background: "none", border: "none", color: T.muted, cursor: "pointer" } },
+                    React.createElement(Icon, { name: "x", size: 18 }))),
+            React.createElement(Eyebrow, { color: T.gold }, "Model provider"),
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, margin: "12px 0 16px" } }, PROVIDERS.map((p) => React.createElement("button", { key: p.id, onClick: () => pickProvider(p.id), style: { textAlign: "left", cursor: "pointer",
+                    background: s.provider === p.id ? T.panel3 : T.panel2, border: "1px solid " + (s.provider === p.id ? T.gold : T.line),
+                    borderRadius: 11, padding: "11px 14px", color: T.ink, fontSize: 14 } }, p.label))),
+            React.createElement("label", { style: { fontSize: 13.5, color: T.ink, fontWeight: 500 } }, "API key"),
+            React.createElement("div", { style: { fontSize: 12, color: T.faint, margin: "3px 0 8px" } },
+                "From ",
+                prov.keyUrl,
+                ". Stored only in this browser."),
+            React.createElement("input", { className: "cs-input", type: "password", value: s.apiKey, placeholder: prov.keyHint, onChange: (e) => set("apiKey", e.target.value) }),
+            React.createElement("div", { style: { marginTop: 14 } },
+                React.createElement("label", { style: { fontSize: 13.5, color: T.ink, fontWeight: 500 } }, "Model"),
+                React.createElement("div", { style: { fontSize: 12, color: T.faint, margin: "3px 0 8px" } }, "Edit to any model your key can use."),
+                React.createElement("input", { className: "cs-input", value: s.model, onChange: (e) => set("model", e.target.value) })),
+            s.provider === "openai" && React.createElement("div", { style: { marginTop: 14 } },
+                React.createElement("label", { style: { fontSize: 13.5, color: T.ink, fontWeight: 500 } }, "Base URL"),
+                React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" } }, OAI_PRESETS.map((pr) => React.createElement("button", { key: pr.name, onClick: () => setS((p) => ({ ...p, baseUrl: pr.baseUrl, model: pr.model })), style: { fontSize: 12, color: s.baseUrl === pr.baseUrl ? "#221604" : T.muted,
+                        background: s.baseUrl === pr.baseUrl ? T.gold : T.panel2, border: "1px solid " + T.line,
+                        borderRadius: 20, padding: "5px 12px", cursor: "pointer" } }, pr.name))),
+                React.createElement("input", { className: "cs-input", value: s.baseUrl, onChange: (e) => set("baseUrl", e.target.value) }),
+                React.createElement("div", { style: { fontSize: 11.5, color: T.faint, marginTop: 8, lineHeight: 1.5 } }, "Browser calls need a provider that allows cross-origin requests. OpenRouter, Gemini and Anthropic do; some (OpenAI direct, DashScope) may be blocked and need a small proxy \u2014 OpenRouter is the easy path for Qwen.")),
+            React.createElement("div", { style: { height: 1, background: T.lineSoft, margin: "20px 0" } }),
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                React.createElement("div", { style: { maxWidth: 330 } },
+                    React.createElement("div", { style: { fontSize: 14, color: T.ink } }, "Hear the interviewer aloud"),
+                    React.createElement("div", { style: { fontSize: 12.5, color: T.faint, marginTop: 2, lineHeight: 1.45 } }, "They speak their questions with your device's voice. You can always speak your answers with the mic.")),
+                React.createElement(Toggle, { on: s.hearThem, onClick: () => set("hearThem", !s.hearThem) })),
+            React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 22 } },
+                React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Cancel"),
+                React.createElement(Btn, { icon: "check", onClick: save }, "Save"))));
+}
+/* ============================== Home ============================== */
+function Home({ profile, sessions, hasKey, onStart, onStartPres, onProgress, onSettings }) {
+    return React.createElement("div", null,
+        !hasKey && React.createElement("div", { style: { marginTop: 20, background: "rgba(224,167,94,.09)", border: "1px solid " + T.goldDim,
+                borderRadius: 12, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+            React.createElement("span", { style: { fontSize: 13.5, color: T.ink } }, "Add a model API key to bring the room to life \u2014 Claude, Gemini, or any OpenAI-compatible model like Qwen."),
+            React.createElement(Btn, { variant: "subtle", icon: "sliders", style: { padding: "8px 14px" }, onClick: onSettings }, "Open settings")),
+        React.createElement("div", { style: { paddingTop: 56, paddingBottom: 30, maxWidth: 720 } },
+            React.createElement("div", { className: "msg-in" },
+                React.createElement(Eyebrow, { color: T.gold }, "AI communication studio")),
+            React.createElement("h1", { className: "msg-in", style: { fontFamily: "'Newsreader', serif", fontWeight: 500,
+                    fontSize: "clamp(34px, 5.4vw, 56px)", lineHeight: 1.06, margin: "18px 0 0", letterSpacing: "-0.01em", color: T.ink } },
+                "Practice the conversations",
+                React.createElement("br", null),
+                "your career turns on."),
+            React.createElement("p", { className: "msg-in", style: { fontSize: 17, color: T.muted, lineHeight: 1.6, margin: "22px 0 0", maxWidth: 560 } },
+                "Speak your answers out loud to interviewers and colleagues who actually respond \u2014 they follow up, push back, and go quiet. Afterwards you get coaching that sounds like ",
+                React.createElement("em", { style: { color: T.ink, fontStyle: "italic" } }, "you"),
+                ", only more prepared."),
+            React.createElement("div", { className: "msg-in", style: { display: "flex", gap: 12, marginTop: 30, flexWrap: "wrap" } },
+                React.createElement(Btn, { icon: "play", onClick: () => onStart({ mode: "interview" }) }, "Start an interview"),
+                React.createElement(Btn, { variant: "ghost", icon: "message", onClick: () => onStart({ mode: "scenario" }) }, "Try a workplace scenario"),
+                React.createElement(Btn, { variant: "ghost", icon: "mic", onClick: onStartPres }, "Present to a room"))),
+        profile && React.createElement("div", { className: "cs-card", style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16,
+                padding: "20px 22px", marginTop: 12, marginBottom: 8, display: "flex", gap: 16, alignItems: "flex-start" } },
+            React.createElement("div", { style: { marginTop: 2 } },
+                React.createElement(Icon, { name: "sparkles", size: 18, color: T.gold })),
+            React.createElement("div", null,
+                React.createElement(Eyebrow, null, "What I've learned about your voice"),
+                React.createElement("p", { style: { margin: "9px 0 0", fontSize: 15, color: T.ink, lineHeight: 1.55, fontFamily: "'Newsreader', serif", fontStyle: "italic" } },
+                    "\"",
+                    profile.voiceSummary,
+                    "\""),
+                profile.strengths && profile.strengths.length > 0 && React.createElement("div", { style: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 13 } }, profile.strengths.slice(0, 3).map((x, i) => React.createElement("span", { key: i, style: { fontSize: 12, color: T.teal,
+                        background: "rgba(111,180,166,.1)", border: "1px solid rgba(111,180,166,.25)", borderRadius: 20, padding: "4px 11px" } }, x))))),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14, marginTop: 26 } },
+            React.createElement(ModuleCard, { icon: "briefcase", live: true, title: "Interview simulator", desc: "Application to final panel. Adaptive follow-ups, real personalities, per-answer coaching.", onClick: () => onStart({ mode: "interview" }) }),
+            React.createElement(ModuleCard, { icon: "users", live: true, title: "Workplace scenarios", desc: "Stand-ups, 1:1s, hard feedback, conflict, stakeholder updates, negotiation.", onClick: () => onStart({ mode: "scenario" }) }),
+            React.createElement(ModuleCard, { icon: "trendingUp", live: true, title: "Progress & profile", desc: "Your communication profile and score trends, learned across every session.", onClick: onProgress, sub: sessions.length ? sessions.length + " session" + (sessions.length > 1 ? "s" : "") + " recorded" : "No sessions yet" }),
+            React.createElement(ModuleCard, { icon: "mic", live: true, title: "Presentation studio", desc: "Present to a live audience of reactive faces, with pace, filler and voice-energy tracking, then Q&A.", onClick: onStartPres })));
+}
+function ModuleCard({ icon, title, desc, onClick, live, next, sub }) {
+    return React.createElement("button", { className: onClick ? "cs-card" : "", onClick: onClick, disabled: !onClick, style: { textAlign: "left",
+            background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "20px 20px 18px",
+            cursor: onClick ? "pointer" : "default", opacity: next ? 0.62 : 1, display: "flex", flexDirection: "column", gap: 11, minHeight: 172 } },
+        React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            React.createElement("div", { style: { width: 38, height: 38, borderRadius: 11, background: T.panel2, border: "1px solid " + T.line,
+                    display: "flex", alignItems: "center", justifyContent: "center" } },
+                React.createElement(Icon, { name: icon, size: 18, color: T.gold })),
+            live && React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: ".1em", color: T.green,
+                    border: "1px solid rgba(132,194,155,.3)", borderRadius: 20, padding: "3px 9px" } }, "LIVE"),
+            next && React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: ".1em", color: T.faint,
+                    border: "1px solid " + T.line, borderRadius: 20, padding: "3px 9px" } }, "NEXT")),
+        React.createElement("div", { style: { fontFamily: "'Newsreader', serif", fontSize: 20, color: T.ink } }, title),
+        React.createElement("div", { style: { fontSize: 13.5, color: T.muted, lineHeight: 1.5, flex: 1 } }, desc),
+        sub && React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: T.faint } }, sub));
+}
+/* ============================== Setup ============================== */
+function Setup({ base, onBegin, onCancel, hasKey, onSettings }) {
+    const mode = (base && base.mode) || "interview";
+    const [cv, setCv] = useState("");
+    const [jd, setJd] = useState("");
+    const [company, setCompany] = useState("");
+    const [scenario, setScenario] = useState(SCENARIOS[0].id);
+    const [context, setContext] = useState("");
+    const [interviewer, setInterviewer] = useState(INTERVIEWERS[0].id);
+    const [length, setLength] = useState("standard");
+    const begin = () => {
+        const turns = LENGTHS.find((l) => l.id === length).turns;
+        const cfg = mode === "interview"
+            ? { mode, cv, jd, company, interviewerId: interviewer, plannedTurns: turns, transcript: [] }
+            : { mode, scenarioId: scenario, context, plannedTurns: turns, transcript: [] };
+        onBegin(cfg);
+    };
+    const blocked = !hasKey || (mode === "interview" && (!cv.trim() || !jd.trim()));
+    return React.createElement("div", { style: { paddingTop: 40, maxWidth: 760, margin: "0 auto" } },
+        React.createElement("button", { onClick: onCancel, style: { background: "none", border: "none", color: T.muted, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 6, fontSize: 13.5, padding: 0, marginBottom: 22 } },
+            React.createElement(Icon, { name: "arrowLeft", size: 15 }),
+            " Back to studio"),
+        React.createElement(Stepper, { step: 1 }),
+        React.createElement("h2", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 32, margin: "20px 0 6px", color: T.ink } }, mode === "interview" ? "Set up your interview" : "Set the scene"),
+        React.createElement("p", { style: { color: T.muted, fontSize: 15, margin: "0 0 30px", lineHeight: 1.55 } }, mode === "interview"
+            ? "Paste your CV and the job description. The interviewer reads them and interviews you for this specific role."
+            : "Pick a situation and give a little context. Your counterpart will react like a real person."),
+        mode === "interview" ? React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 22 } },
+            React.createElement(Field, { label: "Your CV / resume", hint: "Paste the text. Skills, experience and projects here shape the questions." },
+                React.createElement("textarea", { className: "cs-input", rows: 7, value: cv, onChange: (e) => setCv(e.target.value), placeholder: "Paste your CV text here\u2026" })),
+            React.createElement(Field, { label: "Job description", hint: "What the role needs. Drives the topics and difficulty." },
+                React.createElement("textarea", { className: "cs-input", rows: 6, value: jd, onChange: (e) => setJd(e.target.value), placeholder: "Paste the job description\u2026" })),
+            React.createElement(Field, { label: "Company notes", hint: "Optional \u2014 mission, product, anything worth referencing." },
+                React.createElement("textarea", { className: "cs-input", rows: 3, value: company, onChange: (e) => setCompany(e.target.value), placeholder: "Optional context about the company\u2026" })),
+            React.createElement("div", null,
+                React.createElement(Eyebrow, null, "Who's interviewing you"),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10, marginTop: 12 } }, INTERVIEWERS.map((p) => React.createElement(PickCard, { key: p.id, active: interviewer === p.id, onClick: () => setInterviewer(p.id), initials: initialsOf(p.name), title: p.name, subtitle: p.title, blurb: p.blurb }))))) : React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 22 } },
+            React.createElement("div", null,
+                React.createElement(Eyebrow, null, "The situation"),
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10, marginTop: 12 } }, SCENARIOS.map((sc) => React.createElement(PickCard, { key: sc.id, active: scenario === sc.id, onClick: () => setScenario(sc.id), initials: initialsOf(sc.counterpart), title: sc.name, subtitle: sc.counterpart, blurb: sc.blurb })))),
+            React.createElement(Field, { label: "Context", hint: "Optional \u2014 what's going on, so the conversation starts in the right place." },
+                React.createElement("textarea", { className: "cs-input", rows: 4, value: context, onChange: (e) => setContext(e.target.value), placeholder: "e.g. We slipped the release by a week because of a migration bug\u2026" }))),
+        React.createElement("div", { style: { marginTop: 26 } },
+            React.createElement(Eyebrow, null, "Length"),
+            React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" } }, LENGTHS.map((l) => React.createElement("button", { key: l.id, onClick: () => setLength(l.id), style: { background: length === l.id ? T.panel3 : T.panel,
+                    cursor: "pointer", border: "1px solid " + (length === l.id ? T.gold : T.line), borderRadius: 12, padding: "11px 18px", color: T.ink, textAlign: "left" } },
+                React.createElement("div", { style: { fontSize: 14.5, fontWeight: 500 } }, l.label),
+                React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: T.faint, marginTop: 2 } }, l.note))))),
+        React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 34, alignItems: "center", flexWrap: "wrap" } },
+            React.createElement(Btn, { icon: "doorOpen", disabled: blocked, onClick: begin }, "Enter the room"),
+            !hasKey && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                React.createElement("span", { style: { fontSize: 13, color: T.rose } }, "Add a model API key first."),
+                React.createElement(Btn, { variant: "subtle", icon: "sliders", style: { padding: "8px 14px" }, onClick: onSettings }, "Settings")),
+            hasKey && mode === "interview" && (!cv.trim() || !jd.trim()) &&
+                React.createElement("span", { style: { fontSize: 13, color: T.faint } }, "Add your CV and the job description to begin.")));
+}
+function Stepper({ step }) {
+    const steps = ["Prepare", "Interview", "Coaching"];
+    return React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, steps.map((s, i) => React.createElement("div", { key: s, style: { display: "flex", alignItems: "center", gap: 10 } },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            React.createElement("div", { style: { width: 22, height: 22, borderRadius: "50%", border: "1.5px solid " + (i + 1 <= step ? T.gold : T.line),
+                    background: i + 1 < step ? T.gold : "transparent", color: i + 1 < step ? "#221604" : (i + 1 === step ? T.gold : T.faint),
+                    display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 } }, i + 1 < step ? React.createElement(Icon, { name: "check", size: 12 }) : i + 1),
+            React.createElement("span", { style: { fontSize: 12.5, color: i + 1 === step ? T.ink : T.faint, fontFamily: "'IBM Plex Mono', monospace", letterSpacing: ".05em" } }, s)),
+        i < steps.length - 1 && React.createElement("div", { style: { width: 26, height: 1, background: T.line } }))));
+}
+function Field({ label, hint, children }) {
+    return React.createElement("div", null,
+        React.createElement("label", { style: { fontSize: 14, color: T.ink, fontWeight: 500 } }, label),
+        hint && React.createElement("div", { style: { fontSize: 12.5, color: T.faint, margin: "3px 0 9px" } }, hint),
+        children);
+}
+function PickCard({ active, onClick, initials, title, subtitle, blurb }) {
+    return React.createElement("button", { onClick: onClick, className: "cs-card", style: { textAlign: "left", background: active ? T.panel3 : T.panel,
+            border: "1px solid " + (active ? T.gold : T.line), borderRadius: 13, padding: "14px 15px", cursor: "pointer",
+            display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 11 } },
+            React.createElement("div", { style: { width: 34, height: 34, borderRadius: "50%", flexShrink: 0,
+                    background: "radial-gradient(circle at 32% 28%, " + T.panel3 + ", " + T.panel2 + ")",
+                    border: "1px solid " + (active ? T.gold : T.line), display: "flex", alignItems: "center", justifyContent: "center",
+                    fontFamily: "'Newsreader', serif", fontSize: 13, color: T.ink } }, initials),
+            React.createElement("div", { style: { minWidth: 0 } },
+                React.createElement("div", { style: { fontSize: 14, color: T.ink, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, title),
+                React.createElement("div", { style: { fontSize: 12, color: T.gold } }, subtitle))),
+        React.createElement("div", { style: { fontSize: 12.5, color: T.muted, lineHeight: 1.45 } }, blurb));
+}
+/* ============================== Room ============================== */
+const SRClass = (typeof window !== "undefined") ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+function buildSystem(session, docCtx, closing) {
+    if (session.mode === "interview") {
+        const p = INTERVIEWERS.find((x) => x.id === session.interviewerId);
+        return "You are " + p.name + ", a " + p.title + ". " + p.persona + "\n\n" +
+            "You are interviewing a candidate. Context from their CV and the job description:\n" + docCtx + "\n\n" +
+            "Rules:\n- Stay fully in character as " + p.name + ". You are a real person, never an AI, never a coach. Never give feedback.\n" +
+            "- One turn only. Speak 1-3 sentences. Ask ONE thing at a time.\n" +
+            "- React to their LAST answer. If it's vague or unsupported, probe or challenge it. If it's strong, acknowledge briefly and go deeper or move on.\n" +
+            "- Reference earlier answers when natural. Occasionally take a note, pause, or mildly disagree.\n" +
+            "- Sometimes say very little and let a silence invite them to keep talking.\n" +
+            "- Move naturally across: motivation, real experience, a specific project, a challenge or failure, teamwork/conflict, and role-specific depth.\n" +
+            (closing ? "- This is the FINAL moment. Wrap up warmly, thank them, say you'll be in touch. kind must be \"closing\".\n" : "") +
+            "\nOutput ONLY a JSON object, no other text:\n" +
+            '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing]}';
+    }
+    const s = SCENARIOS.find((x) => x.id === session.scenarioId);
+    return "You are " + s.counterpart + ". " + s.persona + "\n\n" +
+        "This is a workplace conversation. The other person's goal is to " + s.goal + ".\n" +
+        (session.context ? "Context they gave: " + session.context + "\n" : "") +
+        "\nRules:\n- Stay fully in character. You are a real colleague, never an AI, never a coach. Never give feedback.\n" +
+        "- One turn only, 1-3 sentences. React genuinely to what they just said.\n" +
+        "- Push back, ask clarifying questions, or show emotion when it fits. Don't make it easy if the moment calls for friction.\n" +
+        (closing ? "- Wrap the conversation up naturally now. kind must be \"closing\".\n" : "") +
+        "\nOutput ONLY a JSON object, no other text:\n" +
+        '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing]}';
+}
+function Room({ session, hearThem, setHearThem, onComplete }) {
+    const [transcript, setTranscript] = useState(session.transcript || []);
+    const [docCtx, setDocCtx] = useState("");
+    const [thinking, setThinking] = useState(true);
+    const [answer, setAnswer] = useState("");
+    const [error, setError] = useState(null);
+    const [ending, setEnding] = useState(false);
+    const [seconds, setSeconds] = useState(0);
+    const [listening, setListening] = useState(false);
+    const [micError, setMicError] = useState(null);
+    const [speaking, setSpeaking] = useState(false);
+    const scrollRef = useRef(null);
+    const startedAt = useRef(Date.now());
+    const recogRef = useRef(null);
+    const baseTextRef = useRef("");
+    const answerRef = useRef("");
+    useEffect(() => { answerRef.current = answer; }, [answer]);
+    const character = session.mode === "interview"
+        ? INTERVIEWERS.find((x) => x.id === session.interviewerId)
+        : { name: SCENARIOS.find((x) => x.id === session.scenarioId).counterpart, title: SCENARIOS.find((x) => x.id === session.scenarioId).name };
+    const qCount = transcript.filter((t) => t.by === "them" && ["question", "followup", "challenge"].includes(t.kind)).length;
+    const speak = useCallback((text) => {
+        if (!hearThem || !window.speechSynthesis)
+            return;
+        try {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            const v = session.mode === "interview" ? (VOICE[session.interviewerId] || {}) : { rate: 1, pitch: 1 };
+            u.rate = v.rate || 1;
+            u.pitch = v.pitch || 1;
+            const voices = window.speechSynthesis.getVoices();
+            const en = voices.filter((x) => /en[-_]/i.test(x.lang));
+            if (en.length)
+                u.voice = en[(session.interviewerId || "x").charCodeAt(0) % en.length];
+            u.onstart = () => setSpeaking(true);
+            u.onend = () => setSpeaking(false);
+            window.speechSynthesis.speak(u);
+        }
+        catch (_a) { }
+    }, [hearThem, session]);
+    function stopMic() { try {
+        recogRef.current && recogRef.current.stop();
+    }
+    catch (_a) { } }
+    function toggleMic() {
+        if (!SRClass) {
+            setMicError("This browser doesn't do voice input — Chrome or Edge work best. You can still type.");
+            return;
+        }
+        if (listening) {
+            stopMic();
+            return;
+        }
+        try {
+            if (window.speechSynthesis)
+                window.speechSynthesis.cancel();
+            const r = new SRClass();
+            r.lang = "en-US";
+            r.continuous = true;
+            r.interimResults = true;
+            baseTextRef.current = answerRef.current ? answerRef.current.trim() + " " : "";
+            let finalChunk = "";
+            r.onresult = (e) => {
+                let interim = "";
+                for (let i = e.resultIndex; i < e.results.length; i++) {
+                    const t = e.results[i][0].transcript;
+                    if (e.results[i].isFinal)
+                        finalChunk += t + " ";
+                    else
+                        interim += t;
+                }
+                setAnswer((baseTextRef.current + finalChunk + interim).replace(/\s+/g, " ").replace(/^\s+/, ""));
+            };
+            r.onerror = (ev) => {
+                setListening(false);
+                if (ev.error === "not-allowed" || ev.error === "service-not-allowed")
+                    setMicError("Microphone access was blocked. Allow it in your browser, or type instead.");
+                else if (ev.error === "audio-capture")
+                    setMicError("No microphone found. Plug one in, or type your answer.");
+            };
+            r.onend = () => setListening(false);
+            recogRef.current = r;
+            setMicError(null);
+            r.start();
+            setListening(true);
+        }
+        catch (_a) {
+            setListening(false);
+            setMicError("Couldn't start the mic here.");
+        }
+    }
+    useEffect(() => () => {
+        try {
+            recogRef.current && recogRef.current.stop();
+        }
+        catch (_a) { }
+        try {
+            window.speechSynthesis && window.speechSynthesis.cancel();
+        }
+        catch (_b) { }
+    }, []);
+    useEffect(() => {
+        if (thinking)
+            return;
+        startedAt.current = Date.now();
+        setSeconds(0);
+        const id = setInterval(() => setSeconds(Math.floor((Date.now() - startedAt.current) / 1000)), 1000);
+        return () => clearInterval(id);
+    }, [thinking]);
+    useEffect(() => { if (scrollRef.current)
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [transcript, thinking]);
+    useEffect(() => {
+        (async () => {
+            try {
+                let ctx = "";
+                if (session.mode === "interview") {
+                    const raw = await callModel({
+                        system: "Extract a concise interview brief from a CV and job description. Return ONLY JSON: {candidateName, role, skills:[up to 6], focusAreas:[up to 5], notableProjects:[up to 3], possibleWeakSpots:[up to 3]}.",
+                        messages: [{ role: "user", content: "CV:\n" + session.cv + "\n\nJOB DESCRIPTION:\n" + session.jd + "\n\nCOMPANY:\n" + (session.company || "n/a") }],
+                        maxTokens: 500,
+                    });
+                    const b = parseJSON(raw, {});
+                    ctx = "Candidate: " + (b.candidateName || "the candidate") + ". Role: " + (b.role || "the role") + ".\n" +
+                        "Skills: " + ((b.skills || []).join(", ")) + ".\nFocus areas: " + ((b.focusAreas || []).join(", ")) + ".\n" +
+                        "Notable projects: " + ((b.notableProjects || []).join("; ")) + ".\nWatch for: " + ((b.possibleWeakSpots || []).join("; ")) + ".";
+                    setDocCtx(ctx);
+                }
+                await advance(ctx, [], false);
+            }
+            catch (e) {
+                setError(e.message === "no_key" ? "Add a model API key in Settings to begin." : "Couldn't reach the model. Check your key and connection.");
+                setThinking(false);
+            }
+        })();
+    }, []);
+    async function advance(ctx, tr, closing) {
+        setThinking(true);
+        setError(null);
+        try {
+            const messages = tr.length
+                ? tr.map((t) => ({ role: t.by === "me" ? "user" : "assistant", content: t.text }))
+                : [{ role: "user", content: "I've just sat down. I'm ready to begin." }];
+            if (messages[0].role !== "user")
+                messages.unshift({ role: "user", content: "Let's begin." });
+            const raw = await callModel({ system: buildSystem(session, ctx, closing), messages, maxTokens: 400 });
+            const turn = parseJSON(raw, null) || { speech: raw || "Let's continue — tell me more.", mood: "neutral", action: "", kind: "question" };
+            const entry = { by: "them", text: turn.speech || "…", mood: turn.mood || "neutral", action: turn.action || "", kind: turn.kind || "question" };
+            const next = [...tr, entry];
+            setTranscript(next);
+            setThinking(false);
+            if (entry.kind !== "silence")
+                speak(entry.text);
+            if (closing)
+                finish(next);
+        }
+        catch (e) {
+            setError(e.message === "no_key" ? "Add a model API key in Settings to continue." : "That didn't go through. Tap retry to continue.");
+            setThinking(false);
+        }
+    }
+    function send() {
+        if (!answer.trim() || thinking)
+            return;
+        stopMic();
+        const mine = { by: "me", text: answer.trim(), seconds, words: words(answer), fillers: countFillers(answer) };
+        const next = [...transcript, mine];
+        setTranscript(next);
+        setAnswer("");
+        advance(docCtx, next, qCount + 1 > session.plannedTurns);
+    }
+    function finish(finalTranscript) {
+        stopMic();
+        try {
+            window.speechSynthesis && window.speechSynthesis.cancel();
+        }
+        catch (_a) { }
+        setEnding(true);
+        onComplete({ ...session, transcript: finalTranscript || transcript, endedAt: Date.now() });
+    }
+    const last = [...transcript].reverse().find((t) => t.by === "them");
+    const ringState = thinking ? "thinking" : (speaking ? "speaking" : "idle");
+    const ringColor = last ? moodOf(last.mood).c : T.gold;
+    function toggleHear() {
+        const nv = !hearThem;
+        setHearThem(nv);
+        if (!nv) {
+            try {
+                window.speechSynthesis && window.speechSynthesis.cancel();
+            }
+            catch (_a) { }
+        }
+        else if (last)
+            speak(last.text);
+    }
+    const label = session.mode === "interview" ? (character.name + " · " + character.title) : character.name;
+    return React.createElement("div", { style: { paddingTop: 26, maxWidth: 800, margin: "0 auto" } },
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 16, padding: "16px 4px 18px", borderBottom: "1px solid " + T.lineSoft,
+                position: "sticky", top: 57, zIndex: 5, background: "linear-gradient(to bottom, rgba(14,20,26,.96) 70%, rgba(14,20,26,0))" } },
+            React.createElement(PresenceRing, { color: ringColor, initials: initialsOf(character.name), state: ringState }),
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("div", { style: { fontFamily: "'Newsreader', serif", fontSize: 20, color: T.ink } }, label),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 4 } },
+                    React.createElement("span", { style: { width: 7, height: 7, borderRadius: "50%", background: ringColor } }),
+                    React.createElement("span", { style: { fontSize: 12.5, color: T.muted, fontFamily: "'IBM Plex Mono', monospace" } }, thinking ? "thinking…" : moodOf(last && last.mood).label.toLowerCase()),
+                    React.createElement("span", { style: { fontSize: 12, color: T.faint, marginLeft: 6 } },
+                        Math.min(qCount, session.plannedTurns),
+                        " / ",
+                        session.plannedTurns,
+                        " questions"))),
+            React.createElement("button", { onClick: toggleHear, "aria-label": "Toggle voice", title: hearThem ? "Interviewer voice on" : "Interviewer voice off", style: { background: hearThem ? "rgba(224,167,94,.12)" : "transparent", border: "1px solid " + (hearThem ? T.goldDim : T.line),
+                    color: hearThem ? T.gold : T.muted, width: 38, height: 38, borderRadius: 10, cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
+                React.createElement(Icon, { name: hearThem ? "volume2" : "volumeX", size: 17 })),
+            React.createElement(Btn, { variant: "quiet", onClick: () => finish() }, "End")),
+        React.createElement("div", { ref: scrollRef, className: "cs-scroll", style: { maxHeight: "calc(100vh - 340px)", minHeight: 260, overflowY: "auto",
+                padding: "22px 4px 12px", display: "flex", flexDirection: "column", gap: 20 } },
+            transcript.map((t, i) => React.createElement(Bubble, { key: i, entry: t, name: character.name })),
+            thinking && React.createElement("div", { className: "msg-in", style: { display: "flex", alignItems: "center", gap: 8, color: T.faint, fontSize: 14 } },
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 } }, character.name.split(" ")[0]),
+                React.createElement("span", { className: "dot" }, "\u2022"),
+                React.createElement("span", { className: "dot" }, "\u2022"),
+                React.createElement("span", { className: "dot" }, "\u2022")),
+            error && React.createElement("div", { style: { background: "rgba(217,138,126,.08)", border: "1px solid rgba(217,138,126,.3)", borderRadius: 12,
+                    padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 } },
+                React.createElement("span", { style: { fontSize: 13.5, color: T.rose } }, error),
+                React.createElement(Btn, { variant: "subtle", icon: "rotateCcw", style: { padding: "8px 14px" }, onClick: () => advance(docCtx, transcript, qCount >= session.plannedTurns) }, "Retry"))),
+        !ending && React.createElement("div", { style: { borderTop: "1px solid " + T.lineSoft, paddingTop: 16, marginTop: 6 } },
+            listening && React.createElement("div", { className: "msg-in", style: { display: "flex", alignItems: "center", gap: 9, marginBottom: 10,
+                    fontSize: 12.5, color: T.gold, fontFamily: "'IBM Plex Mono', monospace" } },
+                React.createElement("span", { className: "ring-pulse", style: { width: 8, height: 8, borderRadius: "50%", background: T.gold, position: "relative" } }),
+                "listening \u2014 just talk. tap the mic again when you're done."),
+            React.createElement("div", { style: { position: "relative" } },
+                React.createElement("textarea", { className: "cs-input", rows: 3, value: answer, onChange: (e) => setAnswer(e.target.value), onKeyDown: (e) => { if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        send();
+                    } }, placeholder: thinking ? "Wait for them to finish…" : "Tap the mic and speak your answer out loud — or type. Talk the way you naturally would.", disabled: thinking, style: { paddingRight: 104 } }),
+                React.createElement("div", { style: { position: "absolute", right: 10, bottom: 10, display: "flex", gap: 8 } },
+                    React.createElement("button", { onClick: toggleMic, disabled: thinking, "aria-label": listening ? "Stop speaking" : "Speak your answer", title: listening ? "Stop" : "Speak your answer", className: "csbtn", style: { width: 38, height: 38, borderRadius: 10,
+                            border: "1px solid " + (listening ? "transparent" : T.line), background: listening ? T.rose : T.panel2,
+                            color: listening ? "#2a0f0a" : (thinking ? T.faint : T.ink), display: "flex", alignItems: "center",
+                            justifyContent: "center", cursor: thinking ? "default" : "pointer" } },
+                        React.createElement(Icon, { name: listening ? "micOff" : "mic", size: 16 })),
+                    React.createElement("button", { onClick: send, disabled: !answer.trim() || thinking, "aria-label": "Send answer", className: "csbtn", style: { width: 38, height: 38, borderRadius: 10, border: "none",
+                            background: answer.trim() && !thinking ? T.gold : T.panel2, color: answer.trim() && !thinking ? "#221604" : T.faint,
+                            display: "flex", alignItems: "center", justifyContent: "center", cursor: answer.trim() && !thinking ? "pointer" : "default" } },
+                        React.createElement(Icon, { name: "send", size: 16 })))),
+            micError && React.createElement("div", { style: { fontSize: 12, color: T.rose, marginTop: 8 } }, micError),
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginTop: 8, alignItems: "center", gap: 12 } },
+                React.createElement("span", { style: { fontSize: 11.5, color: T.faint } }, SRClass ? "Speak or type · Enter sends" : "Type your answer · Enter sends"),
+                !thinking && React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: seconds > 90 ? T.rose : T.faint,
+                        display: "flex", alignItems: "center", gap: 5, flexShrink: 0 } },
+                    React.createElement(Icon, { name: "clock", size: 12 }),
+                    " ",
+                    String(Math.floor(seconds / 60)).padStart(2, "0"),
+                    ":",
+                    String(seconds % 60).padStart(2, "0"),
+                    " \u00B7 ",
+                    words(answer),
+                    " words"))));
+}
+function Bubble({ entry, name }) {
+    if (entry.by === "me") {
+        return React.createElement("div", { className: "msg-in", style: { alignSelf: "flex-end", maxWidth: "78%" } },
+            React.createElement("div", { style: { background: T.panel3, border: "1px solid " + T.line, borderRadius: "14px 14px 4px 14px",
+                    padding: "12px 15px", fontSize: 14.5, color: T.ink, lineHeight: 1.55 } }, entry.text),
+            React.createElement("div", { style: { textAlign: "right", fontSize: 10.5, color: T.faint, marginTop: 4, fontFamily: "'IBM Plex Mono', monospace" } }, "you"));
+    }
+    const m = moodOf(entry.mood);
+    const silent = entry.kind === "silence";
+    return React.createElement("div", { className: "msg-in", style: { alignSelf: "flex-start", maxWidth: "82%" } },
+        entry.action && React.createElement("div", { style: { fontSize: 12, color: T.faint, fontStyle: "italic", marginBottom: 5, fontFamily: "'Newsreader', serif" } },
+            name.split(" ")[0],
+            " ",
+            entry.action),
+        React.createElement("div", { style: { background: silent ? "transparent" : T.panel, border: "1px solid " + (silent ? "transparent" : T.line),
+                borderLeft: "2px solid " + m.c, borderRadius: "4px 14px 14px 14px", padding: silent ? "2px 12px" : "12px 15px",
+                fontSize: silent ? 20 : 14.5, color: silent ? T.faint : T.ink, lineHeight: 1.55, letterSpacing: silent ? ".3em" : 0 } }, entry.text));
+}
+/* ============================== Report ============================== */
+function Report({ session, profile, saveProfile, sessions, saveSessions, onDone, onAgain }) {
+    const [state, setState] = useState("loading");
+    const [analysis, setAnalysis] = useState(null);
+    const [coaching, setCoaching] = useState({});
+    const savedRef = useRef(false);
+    const myTurns = session.transcript.map((t, i) => ({ ...t, i })).filter((t) => t.by === "me");
+    const stats = (() => {
+        const a = myTurns;
+        const totalWords = a.reduce((x, t) => x + (t.words || 0), 0);
+        const totalFill = a.reduce((x, t) => x + ((t.fillers && t.fillers.n) || 0), 0);
+        const avgSec = a.length ? Math.round(a.reduce((x, t) => x + (t.seconds || 0), 0) / a.length) : 0;
+        const fillMap = {};
+        a.forEach((t) => Object.entries((t.fillers && t.fillers.hits) || {}).forEach(([k, v]) => fillMap[k] = (fillMap[k] || 0) + v));
+        return { answers: a.length, totalWords, avgWords: a.length ? Math.round(totalWords / a.length) : 0, totalFill, avgSec, fillMap };
+    })();
+    useEffect(() => {
+        (async () => {
+            try {
+                const transcriptText = session.transcript.map((t) => (t.by === "me" ? "CANDIDATE" : "INTERVIEWER") + ": " + t.text).join("\n\n");
+                const kind = session.mode === "interview" ? "job interview" : "workplace conversation";
+                const raw = await callModel({
+                    system: "You are an elite communication coach reviewing a practice " + kind + ". Be specific, honest and encouraging. Return ONLY JSON:\n" +
+                        '{"scores":{"overall":int,"confidence":int,"clarity":int,"storytelling":int,"executivePresence":int,"technical":int,"leadership":int,"listening":int} (0-100),' +
+                        '"strengths":[3 short specific strings],"improvements":[3 short specific strings],"summary":"2-3 sentence coach read of how they came across"}',
+                    messages: [{ role: "user", content: "TRANSCRIPT:\n" + transcriptText + "\n\nMEASURED: " + stats.answers + " answers, avg " + stats.avgWords + " words, avg " + stats.avgSec + "s each, " + stats.totalFill + " filler words." }],
+                    maxTokens: 700,
+                });
+                const a = parseJSON(raw, null);
+                if (!a || !a.scores)
+                    throw new Error("bad");
+                setAnalysis(a);
+                setState("ready");
+                const profRaw = await callModel({
+                    system: "Analyse how this person communicates from their own words in a practice " + kind + ". Return ONLY JSON:\n" +
+                        '{"voiceSummary":"one vivid sentence describing how they talk","vocabulary":"short phrase","confidence":"short phrase","storytelling":"short phrase","strengths":[3 short],"growthAreas":[3 short],"favouritePhrases":[up to 4 short],"fillers":[up to 4]}',
+                    messages: [{ role: "user", content: myTurns.map((t) => t.text).join("\n\n") || "No answers." }],
+                    maxTokens: 500,
+                });
+                const np = parseJSON(profRaw, null);
+                if (np && np.voiceSummary && !savedRef.current) {
+                    savedRef.current = true;
+                    saveProfile({ ...(profile || {}), ...np, updatedAt: Date.now(), sessions: ((profile && profile.sessions) || 0) + 1 });
+                    const rec = { date: Date.now(), mode: session.mode,
+                        who: session.mode === "interview" ? (INTERVIEWERS.find((x) => x.id === session.interviewerId) || {}).name : (SCENARIOS.find((x) => x.id === session.scenarioId) || {}).name,
+                        overall: a.scores.overall, scores: a.scores };
+                    saveSessions([...(sessions || []), rec].slice(-40));
+                }
+            }
+            catch (_a) {
+                setState("error");
+            }
+        })();
+    }, []);
+    async function coach(i, question, ans) {
+        setCoaching((c) => ({ ...c, [i]: { loading: true } }));
+        try {
+            const raw = await callModel({
+                system: "You are this person's private communication coach. Help them say what THEY would say — but with more structure, confidence and evidence — WITHOUT changing their personality, vocabulary or voice. The rewrite must still sound unmistakably like them, not a polished AI answer.\n" +
+                    ((profile && profile.voiceSummary) ? "How they naturally talk: " + profile.voiceSummary + "\n" : "") +
+                    'Return ONLY JSON:\n{"worked":"1 sentence","improve":"1 sentence","why":"1 sentence","improved":"their answer rewritten in their own voice","whyBetter":"1-2 sentences"}',
+                messages: [{ role: "user", content: "QUESTION: " + question + "\n\nTHEIR ANSWER: " + ans }],
+                maxTokens: 700,
+            });
+            setCoaching((c) => ({ ...c, [i]: { loading: false, data: parseJSON(raw, null) } }));
+        }
+        catch (_a) {
+            setCoaching((c) => ({ ...c, [i]: { loading: false, error: true } }));
+        }
+    }
+    if (state === "loading")
+        return React.createElement("div", { style: { paddingTop: 120, textAlign: "center" } },
+            React.createElement(Icon, { name: "loader", size: 30, color: T.gold, className: "spin" }),
+            React.createElement("p", { style: { color: T.muted, marginTop: 18, fontFamily: "'Newsreader', serif", fontSize: 18, fontStyle: "italic" } }, "Reading the room back\u2026"),
+            React.createElement("p", { style: { color: T.faint, fontSize: 13, marginTop: 4 } }, "Scoring your delivery and learning your voice."));
+    if (state === "error")
+        return React.createElement("div", { style: { paddingTop: 100, textAlign: "center" } },
+            React.createElement("p", { style: { color: T.rose } }, "The coaching report didn't come through."),
+            React.createElement(Btn, { variant: "subtle", onClick: onAgain, style: { marginTop: 16 } }, "Back to setup"));
+    const s = analysis.scores;
+    const scoreRows = [["Confidence", s.confidence, T.gold], ["Clarity", s.clarity, T.teal], ["Storytelling", s.storytelling, T.gold],
+        ["Executive presence", s.executivePresence, T.teal], ["Technical communication", s.technical, T.gold],
+        ["Leadership language", s.leadership, T.teal], ["Listening", s.listening, T.gold]];
+    return React.createElement("div", { style: { paddingTop: 34, maxWidth: 820, margin: "0 auto" } },
+        React.createElement(Stepper, { step: 3 }),
+        React.createElement("h2", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 32, margin: "22px 0 4px" } }, "Your coaching report"),
+        React.createElement("p", { style: { color: T.muted, fontSize: 15, margin: "0 0 26px", lineHeight: 1.55, fontFamily: "'Newsreader', serif", fontStyle: "italic" } }, analysis.summary),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(0,220px) 1fr", gap: 18, alignItems: "start" } },
+            React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "24px 20px", textAlign: "center" } },
+                React.createElement(Eyebrow, null, "Overall"),
+                React.createElement("div", { style: { fontFamily: "'Newsreader', serif", fontSize: 64, color: T.gold, lineHeight: 1, margin: "10px 0 2px" } }, clamp(s.overall)),
+                React.createElement("div", { style: { fontSize: 12, color: T.faint, fontFamily: "'IBM Plex Mono', monospace" } }, "/ 100"),
+                React.createElement("div", { style: { height: 1, background: T.line, margin: "18px 0" } }),
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-around", fontSize: 12 } },
+                    React.createElement(Stat, { label: "Answers", value: stats.answers }),
+                    React.createElement(Stat, { label: "Avg words", value: stats.avgWords }),
+                    React.createElement(Stat, { label: "Fillers", value: stats.totalFill }))),
+            React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "20px 22px" } }, scoreRows.map(([l, v, c]) => React.createElement(ScoreBar, { key: l, label: l, value: clamp(v), accent: c })))),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16 } },
+            React.createElement(ListCard, { title: "What's working", items: analysis.strengths, color: T.teal }),
+            React.createElement(ListCard, { title: "Where to focus", items: analysis.improvements, color: T.gold })),
+        Object.keys(stats.fillMap).length > 0 && React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 14, padding: "16px 18px", marginTop: 14 } },
+            React.createElement(Eyebrow, null, "Filler words caught"),
+            React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 11 } }, Object.entries(stats.fillMap).sort((a, b) => b[1] - a[1]).map(([k, v]) => React.createElement("span", { key: k, style: { fontSize: 12.5, color: T.rose,
+                    background: "rgba(217,138,126,.08)", border: "1px solid rgba(217,138,126,.25)", borderRadius: 20, padding: "4px 12px", fontFamily: "'IBM Plex Mono', monospace" } },
+                k,
+                " \u00D7",
+                v)))),
+        React.createElement("h3", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 23, margin: "36px 0 6px" } }, "Answer by answer"),
+        React.createElement("p", { style: { color: T.faint, fontSize: 13.5, margin: "0 0 18px" } }, "Open any answer for a version that sounds like you \u2014 with more structure and confidence."),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12 } }, myTurns.map((t, idx) => {
+            const prevThem = [...session.transcript.slice(0, t.i)].reverse().find((x) => x.by === "them");
+            return React.createElement(AnswerCard, { key: t.i, idx: idx, question: (prevThem && prevThem.text) || "Opening", answer: t.text, meta: t, coaching: coaching[t.i], onCoach: () => coach(t.i, (prevThem && prevThem.text) || "Opening question", t.text) });
+        })),
+        React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 34, flexWrap: "wrap" } },
+            React.createElement(Btn, { icon: "rotateCcw", onClick: onAgain }, "Practice again"),
+            React.createElement(Btn, { variant: "ghost", icon: "trendingUp", onClick: onDone }, "See progress")));
+}
+function Stat({ label, value }) {
+    return React.createElement("div", null,
+        React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 18, color: T.ink } }, value),
+        React.createElement("div", { style: { fontSize: 10.5, color: T.faint, marginTop: 2 } }, label));
+}
+function ListCard({ title, items, color }) {
+    return React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 14, padding: "17px 19px" } },
+        React.createElement(Eyebrow, { color: color }, title),
+        React.createElement("ul", { style: { margin: "12px 0 0", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 10 } }, (items || []).map((it, i) => React.createElement("li", { key: i, style: { fontSize: 13.8, color: T.ink, lineHeight: 1.5, display: "flex", gap: 9 } },
+            React.createElement("span", { style: { color, marginTop: 2, flexShrink: 0 } }, "\u2014"),
+            it))));
+}
+function AnswerCard({ idx, question, answer, meta, coaching, onCoach }) {
+    const [open, setOpen] = useState(false);
+    return React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 14, overflow: "hidden" } },
+        React.createElement("button", { onClick: () => { setOpen(!open); if (!open && !coaching)
+                onCoach(); }, style: { width: "100%", textAlign: "left",
+                background: "none", border: "none", cursor: "pointer", padding: "15px 18px", display: "flex", gap: 13, alignItems: "flex-start" } },
+            React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: T.gold, marginTop: 2 } }, String(idx + 1).padStart(2, "0")),
+            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("div", { style: { fontSize: 13.5, color: T.muted, marginBottom: 6, lineHeight: 1.4 } }, question),
+                React.createElement("div", { style: { fontSize: 14, color: T.ink, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: open ? 99 : 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, answer),
+                React.createElement("div", { style: { marginTop: 7, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: T.faint, display: "flex", gap: 12 } },
+                    React.createElement("span", null,
+                        meta.words || 0,
+                        " words"),
+                    meta.seconds ? React.createElement("span", null,
+                        meta.seconds,
+                        "s") : null,
+                    meta.fillers && meta.fillers.n ? React.createElement("span", { style: { color: T.rose } },
+                        meta.fillers.n,
+                        " fillers") : null)),
+            React.createElement(Icon, { name: "chevronDown", size: 17, color: T.faint, style: { transform: open ? "rotate(180deg)" : "none", transition: "transform .2s", flexShrink: 0, marginTop: 2 } })),
+        open && React.createElement("div", { style: { borderTop: "1px solid " + T.lineSoft, padding: "16px 18px", background: T.bg } },
+            coaching && coaching.loading && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, color: T.faint, fontSize: 13.5 } },
+                React.createElement(Icon, { name: "loader", size: 15, className: "spin" }),
+                " Writing a version in your voice\u2026"),
+            coaching && coaching.error && React.createElement("div", { style: { color: T.rose, fontSize: 13.5 } },
+                "Couldn't coach this one.",
+                React.createElement("button", { onClick: onCoach, style: { background: "none", border: "none", color: T.gold, cursor: "pointer", marginLeft: 6 } }, "Retry")),
+            coaching && coaching.data && React.createElement(CoachBody, { d: coaching.data })));
+}
+function CoachBody({ d }) {
+    return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+            React.createElement(MiniNote, { label: "Worked", text: d.worked, color: T.teal }),
+            React.createElement(MiniNote, { label: "To improve", text: d.improve, color: T.gold })),
+        d.why && React.createElement("div", { style: { fontSize: 13.5, color: T.muted, lineHeight: 1.5 } },
+            React.createElement("span", { style: { color: T.faint } }, "Why it matters \u2014 "),
+            d.why),
+        React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.goldDim, borderRadius: 12, padding: "15px 17px" } },
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+                React.createElement(Icon, { name: "wand", size: 15, color: T.gold }),
+                React.createElement(Eyebrow, { color: T.gold }, "In your voice, more prepared")),
+            React.createElement("p", { style: { margin: 0, fontSize: 14.5, color: T.ink, lineHeight: 1.6, fontFamily: "'Newsreader', serif" } }, d.improved),
+            d.whyBetter && React.createElement("p", { style: { margin: "12px 0 0", fontSize: 12.5, color: T.faint, lineHeight: 1.5, borderTop: "1px solid " + T.lineSoft, paddingTop: 10 } }, d.whyBetter)));
+}
+function MiniNote({ label, text, color }) {
+    return React.createElement("div", null,
+        React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: ".1em", textTransform: "uppercase", color, marginBottom: 5 } }, label),
+        React.createElement("div", { style: { fontSize: 13.5, color: T.ink, lineHeight: 1.5 } }, text));
+}
+/* ============================== Progress ============================== */
+function Progress({ profile, sessions, onStart }) {
+    if (!profile && (!sessions || sessions.length === 0))
+        return React.createElement("div", { style: { paddingTop: 90, textAlign: "center", maxWidth: 440, margin: "0 auto" } },
+            React.createElement("div", { style: { width: 56, height: 56, borderRadius: 16, border: "1px solid " + T.line, background: T.panel,
+                    display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" } },
+                React.createElement(Icon, { name: "trendingUp", size: 24, color: T.gold })),
+            React.createElement("h2", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 26, margin: "0 0 8px" } }, "Nothing to track yet"),
+            React.createElement("p", { style: { color: T.muted, fontSize: 14.5, lineHeight: 1.55, margin: "0 0 22px" } }, "Finish an interview or a scenario and I'll build your communication profile and plot your scores over time."),
+            React.createElement(Btn, { icon: "play", onClick: onStart }, "Start a session"));
+    const trend = sessions.map((s) => s.overall);
+    const avg = trend.length ? Math.round(trend.reduce((a, b) => a + b, 0) / trend.length) : 0;
+    return React.createElement("div", { style: { paddingTop: 40, maxWidth: 820, margin: "0 auto" } },
+        React.createElement(Eyebrow, { color: T.gold }, "Progress & profile"),
+        React.createElement("h2", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 32, margin: "14px 0 26px" } }, "How you're growing"),
+        profile && React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "22px 24px", marginBottom: 16 } },
+            React.createElement("div", { style: { display: "flex", alignItems: "flex-start", gap: 12 } },
+                React.createElement(Icon, { name: "quote", size: 20, color: T.gold, style: { flexShrink: 0, marginTop: 2 } }),
+                React.createElement("p", { style: { margin: 0, fontFamily: "'Newsreader', serif", fontSize: 19, color: T.ink, lineHeight: 1.5, fontStyle: "italic" } }, profile.voiceSummary)),
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 20, marginTop: 22 } },
+                React.createElement(ProfileList, { label: "Strengths", items: profile.strengths, color: T.teal }),
+                React.createElement(ProfileList, { label: "Growth areas", items: profile.growthAreas, color: T.gold }),
+                React.createElement("div", null, profile.favouritePhrases && profile.favouritePhrases.length > 0 && React.createElement("div", null,
+                    React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: ".12em", textTransform: "uppercase", color: T.faint, marginBottom: 10 } }, "Phrases you reach for"),
+                    React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }, profile.favouritePhrases.map((p, i) => React.createElement("span", { key: i, style: { fontSize: 12, color: T.muted, background: T.panel2, border: "1px solid " + T.line, borderRadius: 20, padding: "4px 11px" } },
+                        "\"",
+                        p,
+                        "\""))))))),
+        trend.length > 0 && React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "22px 24px" } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 18 } },
+                React.createElement(Eyebrow, null, "Overall score over time"),
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: T.muted } },
+                    "avg ",
+                    avg,
+                    " \u00B7 ",
+                    trend.length,
+                    " session",
+                    trend.length > 1 ? "s" : "")),
+            React.createElement(Spark, { data: trend }),
+            React.createElement("div", { style: { marginTop: 22, display: "flex", flexDirection: "column", gap: 2 } }, [...sessions].reverse().map((s, i) => React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: i ? "1px solid " + T.lineSoft : "none" } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, minWidth: 0 } },
+                    React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: s.mode === "interview" ? T.gold : (s.mode === "presentation" ? T.green : T.teal), flexShrink: 0 } }),
+                    React.createElement("span", { style: { fontSize: 14, color: T.ink } }, s.who || (s.mode === "interview" ? "Interview" : "Scenario")),
+                    React.createElement("span", { style: { fontSize: 12, color: T.faint, fontFamily: "'IBM Plex Mono', monospace" } }, new Date(s.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }))),
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, color: T.gold } }, s.overall))))),
+        React.createElement("div", { style: { marginTop: 26 } },
+            React.createElement(Btn, { icon: "play", onClick: onStart }, "New session")));
+}
+function ProfileList({ label, items, color }) {
+    if (!items || !items.length)
+        return React.createElement("div", null);
+    return React.createElement("div", null,
+        React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: ".12em", textTransform: "uppercase", color: T.faint, marginBottom: 10 } }, label),
+        React.createElement("ul", { style: { margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8 } }, items.map((it, i) => React.createElement("li", { key: i, style: { fontSize: 13.5, color: T.ink, lineHeight: 1.45, display: "flex", gap: 8 } },
+            React.createElement("span", { style: { color, flexShrink: 0 } }, "\u2014"),
+            it))));
+}
+function Spark({ data }) {
+    const w = 640, h = 110, pad = 14;
+    const max = Math.max(...data, 100), min = Math.min(...data, 0), range = Math.max(max - min, 1);
+    const pts = data.map((d, i) => {
+        const x = pad + (i * (w - pad * 2)) / Math.max(data.length - 1, 1);
+        const y = h - pad - ((d - min) / range) * (h - pad * 2);
+        return [x, y];
+    });
+    const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const area = path + " L " + pts[pts.length - 1][0].toFixed(1) + " " + (h - pad) + " L " + pts[0][0].toFixed(1) + " " + (h - pad) + " Z";
+    return React.createElement("svg", { viewBox: "0 0 " + w + " " + h, style: { width: "100%", height: "auto", display: "block" } },
+        React.createElement("defs", null,
+            React.createElement("linearGradient", { id: "sg", x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0%", stopColor: T.gold, stopOpacity: "0.28" }),
+                React.createElement("stop", { offset: "100%", stopColor: T.gold, stopOpacity: "0" }))),
+        React.createElement("path", { d: area, fill: "url(#sg)" }),
+        React.createElement("path", { d: path, fill: "none", stroke: T.gold, strokeWidth: "2", strokeLinejoin: "round", strokeLinecap: "round" }),
+        pts.map((p, i) => React.createElement("circle", { key: i, cx: p[0], cy: p[1], r: data.length > 20 ? 2 : 3.4, fill: T.bg, stroke: T.gold, strokeWidth: "1.8" })));
+}
+/* ============================== Presentation Studio ============================== */
+const PRES_MODES = [
+    { id: "quick", label: "Quick update", min: 3 }, { id: "standup", label: "Stand-up", min: 5 },
+    { id: "brief", label: "Project brief", min: 10 }, { id: "tech", label: "Technical talk", min: 20 },
+    { id: "seminar", label: "Seminar", min: 30 },
+];
+const AUDIENCE_TYPES = [
+    { id: "team", name: "Team meeting", n: 6 }, { id: "board", name: "Executive board", n: 5 },
+    { id: "conf", name: "Conference room", n: 8 }, { id: "investor", name: "Investor pitch", n: 4 },
+    { id: "class", name: "Classroom", n: 9 }, { id: "zoom", name: "Zoom call", n: 6 },
+];
+const AUD_MOODS = {
+    engaged: { lid: 1, pupil: [0, -1], brow: -1, mouth: "smile", color: T.teal, label: "Engaged" },
+    curious: { lid: 1, pupil: [1, -1], brow: -2, mouth: "openSmall", color: T.gold, label: "Curious" },
+    impressed: { lid: 1, pupil: [0, -1], brow: -3, mouth: "grin", color: T.green, label: "Impressed" },
+    nodding: { lid: 1, pupil: [0, 0], brow: 0, mouth: "smile", color: T.teal, label: "Nodding", nod: true },
+    neutral: { lid: 1, pupil: [0, 0], brow: 0, mouth: "flat", color: "#8895A2", label: "Listening" },
+    bored: { lid: 0.5, pupil: [0, 1], brow: 2, mouth: "flat", color: "#8a94a0", label: "Bored" },
+    confused: { lid: 1, pupil: [-1, 0], brow: -1, tilt: -3, mouth: "frownSmall", color: T.gold, label: "Confused", q: true },
+    skeptical: { lid: 0.85, pupil: [1, 0], brow: 1, tilt2: -3, mouth: "smirk", color: T.rose, label: "Skeptical" },
+    distracted: { lid: 0.7, pupil: [0, 2], brow: 1, mouth: "flat", color: "#7a8592", label: "Distracted", phone: true },
+    notes: { lid: 0.8, pupil: [0, 2], brow: 0, mouth: "flat", color: "#93A0AC", label: "Taking notes", notes: true },
+};
+const SKINS = ["#f0c9a8", "#e8b98d", "#d29b6e", "#b07b4e", "#8d5a34", "#f4d3b0", "#c68642", "#a56a43"];
+const HAIRS = ["#2b2b2b", "#4a3524", "#111418", "#6b6b6b", "#7a4a24", "#b8b0a2"];
+const audMoodOf = (m) => AUD_MOODS[m] || AUD_MOODS.neutral;
+function Face({ member, size = 56 }) {
+    const p = audMoodOf(member.mood);
+    const bx = p.pupil[0], by = p.pupil[1];
+    const mouths = { smile: "M22 43 Q32 50 42 43", grin: "M21 42 Q32 53 43 42", flat: "M25 45 H39",
+        openSmall: "M28 44 Q32 49 36 44 Q32 45 28 44", frownSmall: "M25 47 Q32 42 39 47", smirk: "M25 46 Q33 47 39 42" };
+    return React.createElement("svg", { viewBox: "0 0 64 72", width: size, height: size * 72 / 64, style: { display: "block" } },
+        React.createElement("circle", { cx: "32", cy: "34", r: "19", fill: member.skin }),
+        member.hairStyle === 0 && React.createElement("path", { d: "M13 33 Q32 6 51 33 Q50 19 32 16 Q14 19 13 33Z", fill: member.hair }),
+        member.hairStyle === 1 && React.createElement("path", { d: "M14 31 Q22 13 32 13 Q42 13 50 31 Q43 23 32 23 Q21 23 14 31Z", fill: member.hair }),
+        member.hairStyle === 2 && React.createElement("path", { d: "M15 28 Q32 18 49 28 Q46 20 32 19 Q18 20 15 28Z", fill: member.hair }),
+        React.createElement("g", { stroke: member.hair, strokeWidth: "1.7", strokeLinecap: "round", transform: "translate(0 " + p.brow + ")" },
+            React.createElement("line", { x1: "20", y1: "28", x2: "28", y2: 28 + (p.tilt || 0) }),
+            React.createElement("line", { x1: "36", y1: 28 + (p.tilt2 || 0), x2: "44", y2: "28" })),
+        React.createElement("ellipse", { cx: "24", cy: "33", rx: "4", ry: 4 * p.lid, fill: "#fff" }),
+        React.createElement("ellipse", { cx: "40", cy: "33", rx: "4", ry: 4 * p.lid, fill: "#fff" }),
+        React.createElement("circle", { cx: 24 + bx * 1.6, cy: 33 + by * 1.5, r: "2", fill: "#222" }),
+        React.createElement("circle", { cx: 40 + bx * 1.6, cy: 33 + by * 1.5, r: "2", fill: "#222" }),
+        React.createElement("path", { d: mouths[p.mouth] || mouths.flat, fill: p.mouth === "openSmall" ? "#6b2f2f" : "none", stroke: "#7a3b3b", strokeWidth: "1.8", strokeLinecap: "round", strokeLinejoin: "round" }),
+        p.phone && React.createElement("g", null,
+            React.createElement("rect", { x: "26", y: "55", width: "12", height: "15", rx: "2", fill: "#0b0f14", stroke: "#33404b" }),
+            React.createElement("rect", { x: "28", y: "58", width: "8", height: "9", rx: "1", fill: T.teal, opacity: "0.5" })),
+        p.notes && React.createElement("g", null,
+            React.createElement("rect", { x: "24", y: "58", width: "16", height: "12", rx: "1.5", fill: "#e9e4d6" }),
+            React.createElement("line", { x1: "27", y1: "62", x2: "37", y2: "62", stroke: "#9a927e", strokeWidth: "1" }),
+            React.createElement("line", { x1: "27", y1: "65", x2: "35", y2: "65", stroke: "#9a927e", strokeWidth: "1" })),
+        p.q && React.createElement("text", { x: "48", y: "15", fontFamily: "'Newsreader',serif", fontSize: "15", fill: T.gold }, "?"));
+}
+function AudienceTile({ member, highlight }) {
+    const p = audMoodOf(member.mood);
+    return React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, textAlign: "center", minWidth: 0 } },
+        React.createElement("div", { className: p.nod ? "aud-nod" : "aud-float", style: { animationDelay: (member.floatDelay || 0) + "s",
+                borderRadius: "50%", padding: 3, border: "2px solid " + (highlight ? T.gold : p.color), transition: "border-color .4s", background: T.panel } },
+            React.createElement(Face, { member: member, size: 54 })),
+        React.createElement("div", { style: { fontSize: 11.5, color: T.ink, maxWidth: 84, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, member.name),
+        React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 9.5, letterSpacing: ".05em", color: p.color, textTransform: "uppercase" } }, p.label),
+        member.thought && React.createElement("div", { key: member.thought, className: "aud-thought", style: { fontSize: 10.5, color: T.muted, lineHeight: 1.3, maxWidth: 100, fontStyle: "italic", fontFamily: "'Newsreader', serif" } },
+            "\"",
+            member.thought,
+            "\""));
+}
+function audienceSystem(roster) {
+    return "You simulate a live audience for a talk. Members:\n" +
+        roster.map((m) => m.id + " = " + m.name + " (" + m.role + ")").join("\n") +
+        "\nGiven what the speaker just said, decide how each member is reacting RIGHT NOW. Be honest: rambling or unclear -> some get bored/confused/distracted; compelling/clear -> engaged/impressed/nodding. Vary reactions across people.\n" +
+        "Return ONLY JSON: {\"members\":[{\"id\":\"m1\",\"mood\":one of [engaged,curious,impressed,nodding,neutral,bored,confused,skeptical,distracted,notes],\"thought\":\"under 7 words, their private reaction\"}],\"engagement\":0-100}";
+}
+function PresStudio({ hearThem, onComplete, onExit }) {
+    const [phase, setPhase] = useState("setup"); // setup | prep | talk | qa
+    const [content, setContent] = useState("");
+    const [audType, setAudType] = useState("team");
+    const [mins, setMins] = useState(5);
+    const [camera, setCamera] = useState(false);
+    const [micErr, setMicErr] = useState(null);
+    const [audience, setAudience] = useState([]);
+    const [segs, setSegs] = useState([]);
+    const [interim, setInterim] = useState("");
+    const [elapsed, setElapsed] = useState(0);
+    const [running, setRunning] = useState(false);
+    const [overtime, setOvertime] = useState(false);
+    const [wpm, setWpm] = useState(0);
+    const [fillers, setFillers] = useState(0);
+    const [energy, setEnergy] = useState(0);
+    const [engagement, setEngagement] = useState(60);
+    const [prepMsg, setPrepMsg] = useState("");
+    // qa
+    const [qaAsker, setQaAsker] = useState(null);
+    const [qaQuestion, setQaQuestion] = useState("");
+    const [qaAnswer, setQaAnswer] = useState("");
+    const [qaThinking, setQaThinking] = useState(false);
+    const [qaList, setQaList] = useState([]);
+    const [qaListening, setQaListening] = useState(false);
+    const recogRef = useRef(null), audioCtxRef = useRef(null), analyserRef = useRef(null);
+    const rafRef = useRef(null), streamRef = useRef(null), videoRef = useRef(null), videoStreamRef = useRef(null);
+    const timerRef = useRef(null), reactRef = useRef(null), qaRecogRef = useRef(null), qaBaseRef = useRef("");
+    const runningRef = useRef(false), elapsedRef = useRef(0), limitRef = useRef(300), segsRef = useRef([]);
+    const audienceRef = useRef([]), energySamplesRef = useRef([]), engSamplesRef = useRef([]), lastWordsRef = useRef(0);
+    useEffect(() => { audienceRef.current = audience; }, [audience]);
+    const fullText = () => segsRef.current.map((s) => s.text).join(" ");
+    function cleanup() {
+        runningRef.current = false;
+        try {
+            recogRef.current && recogRef.current.stop();
+        }
+        catch (_a) { }
+        try {
+            qaRecogRef.current && qaRecogRef.current.stop();
+        }
+        catch (_b) { }
+        if (timerRef.current)
+            clearInterval(timerRef.current);
+        if (reactRef.current)
+            clearInterval(reactRef.current);
+        if (rafRef.current)
+            cancelAnimationFrame(rafRef.current);
+        try {
+            audioCtxRef.current && audioCtxRef.current.close();
+        }
+        catch (_c) { }
+        try {
+            streamRef.current && streamRef.current.getTracks().forEach((t) => t.stop());
+        }
+        catch (_d) { }
+        try {
+            videoStreamRef.current && videoStreamRef.current.getTracks().forEach((t) => t.stop());
+        }
+        catch (_e) { }
+        try {
+            window.speechSynthesis && window.speechSynthesis.cancel();
+        }
+        catch (_f) { }
+    }
+    useEffect(() => () => cleanup(), []);
+    async function toggleCamera() {
+        if (camera) {
+            try {
+                videoStreamRef.current && videoStreamRef.current.getTracks().forEach((t) => t.stop());
+            }
+            catch (_a) { }
+            setCamera(false);
+            return;
+        }
+        try {
+            const st = await navigator.mediaDevices.getUserMedia({ video: true });
+            videoStreamRef.current = st;
+            setCamera(true);
+            setTimeout(() => { if (videoRef.current)
+                videoRef.current.srcObject = st; }, 60);
+        }
+        catch (_b) {
+            setMicErr("Couldn't open the camera. It's optional — you can present without it.");
+        }
+    }
+    async function assembleRoom() {
+        const at = AUDIENCE_TYPES.find((x) => x.id === audType);
+        limitRef.current = mins * 60;
+        setPhase("prep");
+        setPrepMsg("Seating your audience…");
+        let roster = null;
+        try {
+            const raw = await callModel({
+                system: "Create a realistic audience for a talk. Return ONLY JSON: {\"members\":[{\"id\":\"m1\",\"name\":\"First Last\",\"role\":\"short role\"}]}. Exactly " + at.n + " members, varied names and roles fitting the setting.",
+                messages: [{ role: "user", content: "Setting: " + at.name + ". Talk topic (from the speaker's notes): " + (content.slice(0, 240) || "a work update") + "." }],
+                maxTokens: 400,
+            });
+            const d = parseJSON(raw, null);
+            if (d && d.members)
+                roster = d.members;
+        }
+        catch (_a) { }
+        if (!roster)
+            roster = Array.from({ length: at.n }).map((_, i) => ({ id: "m" + (i + 1), name: "Guest " + (i + 1), role: at.name }));
+        roster = roster.slice(0, at.n).map((m, i) => ({ ...m, id: m.id || ("m" + (i + 1)), mood: "neutral", thought: "",
+            skin: SKINS[i % SKINS.length], hair: HAIRS[(i * 2 + 1) % HAIRS.length], hairStyle: i % 3, floatDelay: (i * 0.4).toFixed(1) }));
+        audienceRef.current = roster;
+        setAudience(roster);
+        setPhase("talk");
+    }
+    function startAudio() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+            return;
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+            streamRef.current = stream;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC)
+                return;
+            const ctx = new AC();
+            const src = ctx.createMediaStreamSource(stream);
+            const an = ctx.createAnalyser();
+            an.fftSize = 512;
+            src.connect(an);
+            audioCtxRef.current = ctx;
+            analyserRef.current = an;
+            const buf = new Uint8Array(an.fftSize);
+            const loop = () => {
+                an.getByteTimeDomainData(buf);
+                let sum = 0;
+                for (let i = 0; i < buf.length; i++) {
+                    const v = (buf[i] - 128) / 128;
+                    sum += v * v;
+                }
+                const rms = Math.sqrt(sum / buf.length);
+                setEnergy(rms);
+                energySamplesRef.current.push(rms);
+                rafRef.current = requestAnimationFrame(loop);
+            };
+            loop();
+        }).catch(() => { });
+    }
+    function startRecog() {
+        if (!SRClass)
+            return;
+        const r = new SRClass();
+        r.lang = "en-US";
+        r.continuous = true;
+        r.interimResults = true;
+        r.onresult = (e) => {
+            let itm = "";
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+                const t = e.results[i][0].transcript;
+                if (e.results[i].isFinal) {
+                    const ot = elapsedRef.current >= limitRef.current;
+                    segsRef.current = [...segsRef.current, { text: t.trim(), overtime: ot }];
+                    setSegs(segsRef.current);
+                    const full = fullText();
+                    setFillers(countFillers(full).n);
+                }
+                else
+                    itm += t;
+            }
+            setInterim(itm);
+        };
+        r.onend = () => { if (runningRef.current) {
+            try {
+                r.start();
+            }
+            catch (_a) { }
+        } };
+        recogRef.current = r;
+        try {
+            r.start();
+        }
+        catch (_a) { }
+    }
+    async function reactNow() {
+        const roster = audienceRef.current;
+        if (!roster.length)
+            return;
+        const full = fullText();
+        const wds = full ? full.split(/\s+/) : [];
+        if (SRClass && wds.length > lastWordsRef.current + 4) {
+            lastWordsRef.current = wds.length;
+            try {
+                const raw = await callModel({ system: audienceSystem(roster),
+                    messages: [{ role: "user", content: "RECENT SPEECH: " + wds.slice(-90).join(" ") + "\n\nSeconds in: " + elapsedRef.current + ". Give current reactions." }],
+                    maxTokens: 400 });
+                const d = parseJSON(raw, null);
+                if (d && d.members) {
+                    const map = {};
+                    d.members.forEach((x) => map[x.id] = x);
+                    setAudience((prev) => prev.map((m) => map[m.id] ? { ...m, mood: map[m.id].mood || m.mood, thought: map[m.id].thought || "" } : m));
+                    if (typeof d.engagement === "number") {
+                        setEngagement(d.engagement);
+                        engSamplesRef.current.push(d.engagement);
+                    }
+                }
+            }
+            catch (_a) { }
+        }
+        else {
+            // ambient drift (no speech recognition, or no new words)
+            const pool = ["engaged", "neutral", "curious", "nodding", "bored", "distracted", "notes", "neutral"];
+            setAudience((prev) => prev.map((m) => Math.random() < 0.4 ? { ...m, mood: pool[Math.floor(Math.random() * pool.length)], thought: "" } : m));
+        }
+    }
+    function startTalk() {
+        if (!navigator.mediaDevices) {
+            setMicErr("This browser can't open the microphone. Try Chrome or Edge in a normal tab.");
+            return;
+        }
+        setMicErr(null);
+        runningRef.current = true;
+        setRunning(true);
+        elapsedRef.current = 0;
+        setElapsed(0);
+        segsRef.current = [];
+        setSegs([]);
+        lastWordsRef.current = 0;
+        energySamplesRef.current = [];
+        engSamplesRef.current = [];
+        startAudio();
+        startRecog();
+        timerRef.current = setInterval(() => {
+            const e = elapsedRef.current + 1;
+            elapsedRef.current = e;
+            setElapsed(e);
+            if (e >= limitRef.current)
+                setOvertime(true);
+            const full = fullText();
+            if (e > 2)
+                setWpm(Math.round(words(full) / (e / 60)));
+        }, 1000);
+        reactRef.current = setInterval(reactNow, 14000);
+        setTimeout(reactNow, 4000);
+    }
+    function stopTalk() {
+        runningRef.current = false;
+        setRunning(false);
+        try {
+            recogRef.current && recogRef.current.stop();
+        }
+        catch (_a) { }
+        if (timerRef.current)
+            clearInterval(timerRef.current);
+        if (reactRef.current)
+            clearInterval(reactRef.current);
+        if (rafRef.current)
+            cancelAnimationFrame(rafRef.current);
+        try {
+            audioCtxRef.current && audioCtxRef.current.close();
+            audioCtxRef.current = null;
+        }
+        catch (_b) { }
+    }
+    // --- Q&A ---
+    async function askQuestion() {
+        setQaThinking(true);
+        const roster = audienceRef.current;
+        const asker = roster[Math.floor(Math.random() * roster.length)] || { name: "Someone", role: "audience" };
+        setQaAsker(asker);
+        try {
+            const raw = await callModel({
+                system: "You are " + asker.name + ", " + asker.role + ", in the audience after a talk. Ask ONE realistic, specific question about what was said — curious or challenging. Return ONLY JSON: {\"question\": string}.",
+                messages: [{ role: "user", content: "TALK (transcript):\n" + fullText().slice(0, 2200) + (qaList.length ? "\n\nAlready asked: " + qaList.map((q) => q.q).join(" | ") : "") }],
+                maxTokens: 200,
+            });
+            const d = parseJSON(raw, { question: "Can you say more about the main point?" });
+            setQaQuestion(d.question);
+            setQaThinking(false);
+            if (hearThem && window.speechSynthesis) {
+                try {
+                    const u = new SpeechSynthesisUtterance(d.question);
+                    window.speechSynthesis.speak(u);
+                }
+                catch (_a) { }
+            }
+        }
+        catch (_b) {
+            setQaQuestion("Can you expand on your main point?");
+            setQaThinking(false);
+        }
+    }
+    function startQA() { stopTalk(); setPhase("qa"); setTimeout(askQuestion, 300); }
+    function submitAnswer() {
+        if (!qaAnswer.trim())
+            return;
+        try {
+            qaRecogRef.current && qaRecogRef.current.stop();
+        }
+        catch (_a) { }
+        const nl = [...qaList, { q: qaQuestion, a: qaAnswer.trim(), by: qaAsker && qaAsker.name }];
+        setQaList(nl);
+        setQaAnswer("");
+        setQaQuestion("");
+        if (nl.length >= 3)
+            finishAll(nl);
+        else
+            askQuestion();
+    }
+    function qaMic() {
+        if (!SRClass) {
+            setMicErr("Voice input needs Chrome or Edge. You can type your answer.");
+            return;
+        }
+        if (qaListening) {
+            try {
+                qaRecogRef.current && qaRecogRef.current.stop();
+            }
+            catch (_a) { }
+            ;
+            return;
+        }
+        try {
+            const r = new SRClass();
+            r.lang = "en-US";
+            r.continuous = true;
+            r.interimResults = true;
+            qaBaseRef.current = qaAnswer ? qaAnswer.trim() + " " : "";
+            let fin = "";
+            r.onresult = (e) => { let itm = ""; for (let i = e.resultIndex; i < e.results.length; i++) {
+                const t = e.results[i][0].transcript;
+                if (e.results[i].isFinal)
+                    fin += t + " ";
+                else
+                    itm += t;
+            } setQaAnswer((qaBaseRef.current + fin + itm).replace(/\s+/g, " ").replace(/^\s+/, "")); };
+            r.onend = () => setQaListening(false);
+            qaRecogRef.current = r;
+            r.start();
+            setQaListening(true);
+        }
+        catch (_b) {
+            setQaListening(false);
+        }
+    }
+    function finishAll(qa) {
+        cleanup();
+        const samples = energySamplesRef.current;
+        const mean = samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
+        const variance = samples.length ? Math.sqrt(samples.reduce((a, b) => a + (b - mean) * (b - mean), 0) / samples.length) : 0;
+        const full = fullText();
+        const overtimeWords = segsRef.current.filter((s) => s.overtime).reduce((a, s) => a + words(s.text), 0);
+        onComplete({
+            mode: "presentation", audType: (AUDIENCE_TYPES.find((x) => x.id === audType) || {}).name, minutes: mins,
+            transcriptSegs: segsRef.current, transcript: full, durationSec: elapsedRef.current,
+            wpm: elapsedRef.current > 2 ? Math.round(words(full) / (elapsedRef.current / 60)) : 0,
+            fillers: countFillers(full), overtimeWords, energyVariety: variance, energyMean: mean,
+            engagementSamples: engSamplesRef.current, avgEngagement: engSamplesRef.current.length ? Math.round(engSamplesRef.current.reduce((a, b) => a + b, 0) / engSamplesRef.current.length) : engagement,
+            qa: qa || qaList,
+        });
+    }
+    const mmss = (s) => String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    /* ---- render: setup ---- */
+    if (phase === "setup") {
+        return React.createElement("div", { style: { paddingTop: 40, maxWidth: 760, margin: "0 auto" } },
+            React.createElement("button", { onClick: onExit, style: { background: "none", border: "none", color: T.muted, cursor: "pointer",
+                    display: "flex", alignItems: "center", gap: 6, fontSize: 13.5, padding: 0, marginBottom: 22 } },
+                React.createElement(Icon, { name: "arrowLeft", size: 15 }),
+                " Back to studio"),
+            React.createElement(Eyebrow, { color: T.gold }, "Presentation studio"),
+            React.createElement("h2", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 32, margin: "14px 0 6px" } }, "Present to a live room"),
+            React.createElement("p", { style: { color: T.muted, fontSize: 15, margin: "0 0 28px", lineHeight: 1.55 } }, "Speak your talk out loud. The audience reacts to what you actually say \u2014 they lean in, get bored, look confused \u2014 then they ask questions."),
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 22 } },
+                React.createElement(Field, { label: "Your talk", hint: "Paste your notes, outline, or slide text. It's what the audience expects to hear." },
+                    React.createElement("textarea", { className: "cs-input", rows: 6, value: content, onChange: (e) => setContent(e.target.value), placeholder: "Paste or type your talk / notes\u2026" })),
+                React.createElement("div", null,
+                    React.createElement(Eyebrow, null, "Audience"),
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 10, marginTop: 12 } }, AUDIENCE_TYPES.map((a) => React.createElement("button", { key: a.id, onClick: () => setAudType(a.id), className: "cs-card", style: { textAlign: "left",
+                            background: audType === a.id ? T.panel3 : T.panel, border: "1px solid " + (audType === a.id ? T.gold : T.line), borderRadius: 12, padding: "12px 14px", cursor: "pointer", color: T.ink } },
+                        React.createElement("div", { style: { fontSize: 14, fontWeight: 500 } }, a.name),
+                        React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: T.faint, marginTop: 2 } },
+                            a.n,
+                            " people"))))),
+                React.createElement("div", null,
+                    React.createElement(Eyebrow, null, "Time limit"),
+                    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "center" } },
+                        PRES_MODES.map((m) => React.createElement("button", { key: m.id, onClick: () => setMins(m.min), style: { background: mins === m.min ? T.panel3 : T.panel,
+                                cursor: "pointer", border: "1px solid " + (mins === m.min ? T.gold : T.line), borderRadius: 11, padding: "9px 14px", color: T.ink, fontSize: 13.5 } },
+                            m.label,
+                            React.createElement("span", { style: { color: T.faint, marginLeft: 6, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 } },
+                                m.min,
+                                "m"))),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginLeft: 4 } },
+                            React.createElement("input", { className: "cs-input", type: "number", min: "1", max: "90", value: mins, onChange: (e) => setMins(Math.max(1, Math.min(90, +e.target.value || 1))), style: { width: 70, padding: "9px 10px" } }),
+                            React.createElement("span", { style: { fontSize: 12.5, color: T.faint } }, "min"))))),
+            micErr && React.createElement("div", { style: { fontSize: 12.5, color: T.rose, marginTop: 16 } }, micErr),
+            React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 30, alignItems: "center", flexWrap: "wrap" } },
+                React.createElement(Btn, { icon: "users", disabled: !content.trim() || !CFG.apiKey, onClick: assembleRoom }, "Assemble the room"),
+                !CFG.apiKey ? React.createElement("span", { style: { fontSize: 13, color: T.rose } }, "Add a model API key in Settings first.")
+                    : (!content.trim() && React.createElement("span", { style: { fontSize: 13, color: T.faint } }, "Add your talk to begin."))));
+    }
+    if (phase === "prep")
+        return React.createElement("div", { style: { paddingTop: 130, textAlign: "center" } },
+            React.createElement(Icon, { name: "loader", size: 28, color: T.gold, className: "spin" }),
+            React.createElement("p", { style: { color: T.muted, marginTop: 16, fontFamily: "'Newsreader', serif", fontStyle: "italic", fontSize: 18 } }, prepMsg));
+    /* ---- render: talk & qa ---- */
+    const overLimit = elapsed >= limitRef.current;
+    const wpmColor = wpm > 165 ? T.rose : (wpm > 0 && wpm < 105 ? T.gold : T.teal);
+    return React.createElement("div", { style: { paddingTop: 22, maxWidth: 900, margin: "0 auto" } },
+        React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "20px 18px 16px" } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+                React.createElement(Eyebrow, { color: T.gold },
+                    (AUDIENCE_TYPES.find((x) => x.id === audType) || {}).name,
+                    " \u00B7 your audience"),
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: T.muted } },
+                    "engagement ",
+                    Math.round(engagement),
+                    "%")),
+            React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 18, justifyContent: "center" } }, audience.map((m) => React.createElement(AudienceTile, { key: m.id, member: m, highlight: phase === "qa" && qaAsker && qaAsker.id === m.id }))),
+            camera && React.createElement("video", { ref: videoRef, autoPlay: true, muted: true, playsInline: true, style: { position: "fixed", right: 18, bottom: 18, width: 150, height: 112,
+                    borderRadius: 12, border: "1px solid " + T.line, objectFit: "cover", transform: "scaleX(-1)", zIndex: 30, background: "#000" } })),
+        phase === "talk" && React.createElement("div", { style: { marginTop: 16 } },
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10 } },
+                React.createElement(Meter, { label: "Time", value: mmss(elapsed), sub: "/ " + mmss(limitRef.current), color: overLimit ? T.rose : T.ink }),
+                React.createElement(Meter, { label: "Pace", value: wpm ? wpm + "" : "—", sub: "wpm", color: wpmColor }),
+                React.createElement(Meter, { label: "Fillers", value: fillers + "", sub: "words", color: fillers > 6 ? T.rose : T.ink }),
+                React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 12, padding: "12px 14px" } },
+                    React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.faint } }, "Voice energy"),
+                    React.createElement("div", { style: { height: 8, borderRadius: 6, background: T.lineSoft, overflow: "hidden", marginTop: 10 } },
+                        React.createElement("div", { style: { height: "100%", width: Math.min(100, energy * 280) + "%", background: energy < 0.02 ? T.rose : T.teal, borderRadius: 6, transition: "width .1s" } })))),
+            overtime && React.createElement("div", { style: { marginTop: 14, background: "rgba(217,138,126,.1)", border: "1px solid " + T.rose, borderRadius: 12,
+                    padding: "11px 15px", fontSize: 13.5, color: T.rose } },
+                "You're over your ",
+                mins,
+                "-minute limit \u2014 anything from here is marked in red. Wrap up or move to questions."),
+            React.createElement("div", { className: "cs-scroll", style: { marginTop: 14, background: T.bg, border: "1px solid " + T.line, borderRadius: 14, padding: "16px 18px",
+                    maxHeight: 180, overflowY: "auto", fontSize: 14.5, lineHeight: 1.6, color: T.ink } },
+                !running && segs.length === 0 && React.createElement("span", { style: { color: T.faint } }, "Your live transcript appears here as you speak."),
+                segs.map((s, i) => React.createElement("span", { key: i, style: { color: s.overtime ? T.rose : T.ink } },
+                    s.text,
+                    " ")),
+                React.createElement("span", { style: { color: T.faint } }, interim)),
+            micErr && React.createElement("div", { style: { fontSize: 12.5, color: T.rose, marginTop: 10 } }, micErr),
+            !SRClass && React.createElement("div", { style: { fontSize: 12, color: T.faint, marginTop: 10 } }, "Live transcript & word-based reactions need Chrome or Edge. You can still rehearse against the timer; the audience will drift naturally."),
+            React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap", alignItems: "center" } },
+                !running ? React.createElement(Btn, { icon: "mic", onClick: startTalk }, "Start presenting")
+                    : React.createElement(Btn, { icon: "micOff", variant: "subtle", onClick: stopTalk }, "Pause"),
+                React.createElement(Btn, { variant: "ghost", icon: "message", onClick: startQA, disabled: segs.length === 0 && running }, "Take questions"),
+                React.createElement("button", { onClick: () => toggleCamera(), style: { background: camera ? "rgba(224,167,94,.12)" : "transparent",
+                        border: "1px solid " + (camera ? T.goldDim : T.line), color: camera ? T.gold : T.muted, borderRadius: 10, padding: "9px 13px",
+                        cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 7 } },
+                    "self-view ",
+                    camera ? "on" : "off"))),
+        phase === "qa" && React.createElement("div", { style: { marginTop: 16 } },
+            React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 14, padding: "18px 20px" } },
+                React.createElement(Eyebrow, { color: T.gold },
+                    "Questions \u00B7 ",
+                    qaList.length + 1,
+                    " of 3"),
+                qaThinking ? React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, color: T.faint, fontSize: 14, marginTop: 12 } },
+                    React.createElement(Icon, { name: "loader", size: 15, className: "spin" }),
+                    " ",
+                    (qaAsker && qaAsker.name) || "The audience",
+                    " is thinking of a question\u2026")
+                    : React.createElement("p", { style: { margin: "10px 0 0", fontSize: 16, color: T.ink, lineHeight: 1.5, fontFamily: "'Newsreader', serif" } },
+                        React.createElement("span", { style: { color: T.gold } },
+                            qaAsker && qaAsker.name,
+                            ":"),
+                        " \"",
+                        qaQuestion,
+                        "\"")),
+            !qaThinking && React.createElement("div", { style: { marginTop: 14, position: "relative" } },
+                React.createElement("textarea", { className: "cs-input", rows: 3, value: qaAnswer, onChange: (e) => setQaAnswer(e.target.value), onKeyDown: (e) => { if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        submitAnswer();
+                    } }, placeholder: "Speak or type your answer\u2026", style: { paddingRight: 104 } }),
+                React.createElement("div", { style: { position: "absolute", right: 10, bottom: 10, display: "flex", gap: 8 } },
+                    React.createElement("button", { onClick: qaMic, className: "csbtn", "aria-label": "Speak answer", style: { width: 38, height: 38, borderRadius: 10,
+                            border: "1px solid " + (qaListening ? "transparent" : T.line), background: qaListening ? T.rose : T.panel2,
+                            color: qaListening ? "#2a0f0a" : T.ink, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" } },
+                        React.createElement(Icon, { name: qaListening ? "micOff" : "mic", size: 16 })),
+                    React.createElement("button", { onClick: submitAnswer, disabled: !qaAnswer.trim(), className: "csbtn", "aria-label": "Send answer", style: { width: 38, height: 38, borderRadius: 10,
+                            border: "none", background: qaAnswer.trim() ? T.gold : T.panel2, color: qaAnswer.trim() ? "#221604" : T.faint,
+                            display: "flex", alignItems: "center", justifyContent: "center", cursor: qaAnswer.trim() ? "pointer" : "default" } },
+                        React.createElement(Icon, { name: "send", size: 16 })))),
+            React.createElement("div", { style: { marginTop: 16 } },
+                React.createElement(Btn, { variant: "ghost", onClick: () => finishAll() }, "End & get report"))));
+}
+function Meter({ label, value, sub, color }) {
+    return React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 12, padding: "12px 14px" } },
+        React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.faint } }, label),
+        React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 5, marginTop: 6 } },
+            React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 20, color: color || T.ink } }, value),
+            sub && React.createElement("span", { style: { fontSize: 11, color: T.faint } }, sub)));
+}
+function PresReport({ pres, profile, saveProfile, sessions, saveSessions, onAgain, onDone }) {
+    const [state, setState] = useState("loading");
+    const [a, setA] = useState(null);
+    const savedRef = useRef(false);
+    useEffect(() => {
+        (async () => {
+            try {
+                const fillMap = pres.fillers.hits || {};
+                const raw = await callModel({
+                    system: "You are an elite presentation coach. Review a rehearsed talk honestly and specifically. Return ONLY JSON:\n" +
+                        '{"scores":{"overall":int,"clarity":int,"structure":int,"pacing":int,"engagement":int,"confidence":int,"vocalEnergy":int} (0-100),' +
+                        '"strongest":"one specific moment or strength","weakest":"one specific thing to fix","suggestions":[3 short specific tips],"summary":"2-3 sentence read of how it landed"}',
+                    messages: [{ role: "user", content: "TALK TRANSCRIPT:\n" + (pres.transcript || "(no speech captured)") +
+                                "\n\nMEASURED: " + Math.round(pres.durationSec / 60 * 10) / 10 + " min spoken, target " + pres.minutes + " min, " + pres.wpm + " wpm, " +
+                                (pres.fillers.n || 0) + " fillers, " + pres.overtimeWords + " words over time, avg audience engagement " + pres.avgEngagement + "%." }],
+                    maxTokens: 700,
+                });
+                const d = parseJSON(raw, null);
+                if (!d || !d.scores)
+                    throw new Error("bad");
+                setA(d);
+                setState("ready");
+                if (!savedRef.current) {
+                    savedRef.current = true;
+                    const rec = { date: Date.now(), mode: "presentation", who: pres.audType || "Presentation", overall: d.scores.overall, scores: d.scores };
+                    saveSessions([...(sessions || []), rec].slice(-40));
+                    try {
+                        const pr = await callModel({ system: "Describe how this speaker presents, from their transcript. Return ONLY JSON: {\"voiceSummary\":\"one vivid sentence\",\"strengths\":[3 short],\"growthAreas\":[3 short]}.",
+                            messages: [{ role: "user", content: (pres.transcript || "").slice(0, 2000) || "No speech." }], maxTokens: 400 });
+                        const np = parseJSON(pr, null);
+                        if (np && np.voiceSummary)
+                            saveProfile({ ...(profile || {}), ...np, updatedAt: Date.now(), sessions: ((profile && profile.sessions) || 0) + 1 });
+                    }
+                    catch (_a) { }
+                }
+            }
+            catch (_b) {
+                setState("error");
+            }
+        })();
+    }, []);
+    if (state === "loading")
+        return React.createElement("div", { style: { paddingTop: 120, textAlign: "center" } },
+            React.createElement(Icon, { name: "loader", size: 30, color: T.gold, className: "spin" }),
+            React.createElement("p", { style: { color: T.muted, marginTop: 18, fontFamily: "'Newsreader', serif", fontSize: 18, fontStyle: "italic" } }, "Reading the room back\u2026"));
+    if (state === "error")
+        return React.createElement("div", { style: { paddingTop: 100, textAlign: "center" } },
+            React.createElement("p", { style: { color: T.rose } }, "The report didn't come through."),
+            React.createElement(Btn, { variant: "subtle", onClick: onAgain, style: { marginTop: 16 } }, "Back to setup"));
+    const s = a.scores;
+    const rows = [["Clarity", s.clarity, T.teal], ["Structure", s.structure, T.gold], ["Pacing", s.pacing, T.teal],
+        ["Audience engagement", s.engagement, T.gold], ["Confidence", s.confidence, T.teal], ["Vocal energy", s.vocalEnergy, T.gold]];
+    const fh = pres.fillers.hits || {};
+    return React.createElement("div", { style: { paddingTop: 34, maxWidth: 820, margin: "0 auto" } },
+        React.createElement(Eyebrow, { color: T.gold }, "Presentation report"),
+        React.createElement("h2", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 32, margin: "14px 0 4px" } }, "How it landed"),
+        React.createElement("p", { style: { color: T.muted, fontSize: 15, margin: "0 0 24px", lineHeight: 1.55, fontFamily: "'Newsreader', serif", fontStyle: "italic" } }, a.summary),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(0,220px) 1fr", gap: 18, alignItems: "start" } },
+            React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "24px 20px", textAlign: "center" } },
+                React.createElement(Eyebrow, null, "Overall"),
+                React.createElement("div", { style: { fontFamily: "'Newsreader', serif", fontSize: 64, color: T.gold, lineHeight: 1, margin: "10px 0 2px" } }, clamp(s.overall)),
+                React.createElement("div", { style: { fontSize: 12, color: T.faint, fontFamily: "'IBM Plex Mono', monospace" } }, "/ 100"),
+                React.createElement("div", { style: { height: 1, background: T.line, margin: "18px 0" } }),
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-around", fontSize: 12 } },
+                    React.createElement(Stat, { label: "Spoken", value: Math.round(pres.durationSec / 60 * 10) / 10 + "m" }),
+                    React.createElement(Stat, { label: "Pace", value: pres.wpm }),
+                    React.createElement(Stat, { label: "Over", value: pres.overtimeWords + "w" }))),
+            React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "20px 22px" } }, rows.map(([l, v, c]) => React.createElement(ScoreBar, { key: l, label: l, value: clamp(v), accent: c })))),
+        pres.engagementSamples && pres.engagementSamples.length > 1 && React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 16, padding: "20px 24px", marginTop: 16 } },
+            React.createElement(Eyebrow, null, "Audience engagement through the talk"),
+            React.createElement("div", { style: { marginTop: 14 } },
+                React.createElement(Spark, { data: pres.engagementSamples }))),
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16 } },
+            React.createElement(ListCard, { title: "Strongest moment", items: [a.strongest], color: T.teal }),
+            React.createElement(ListCard, { title: "Biggest fix", items: [a.weakest], color: T.gold })),
+        React.createElement("div", { style: { marginTop: 14 } },
+            React.createElement(ListCard, { title: "Try next time", items: a.suggestions, color: T.gold })),
+        Object.keys(fh).length > 0 && React.createElement("div", { style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 14, padding: "16px 18px", marginTop: 14 } },
+            React.createElement(Eyebrow, null, "Filler words caught"),
+            React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 11 } }, Object.entries(fh).sort((x, y) => y[1] - x[1]).map(([k, v]) => React.createElement("span", { key: k, style: { fontSize: 12.5, color: T.rose, background: "rgba(217,138,126,.08)", border: "1px solid rgba(217,138,126,.25)", borderRadius: 20, padding: "4px 12px", fontFamily: "'IBM Plex Mono', monospace" } },
+                k,
+                " \u00D7",
+                v)))),
+        pres.qa && pres.qa.length > 0 && React.createElement("div", { style: { marginTop: 20 } },
+            React.createElement("h3", { style: { fontFamily: "'Newsreader', serif", fontWeight: 500, fontSize: 21, margin: "0 0 12px" } }, "Your Q&A"),
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } }, pres.qa.map((q, i) => React.createElement("div", { key: i, style: { background: T.panel, border: "1px solid " + T.line, borderRadius: 12, padding: "14px 16px" } },
+                React.createElement("div", { style: { fontSize: 13.5, color: T.gold, marginBottom: 6 } },
+                    q.by,
+                    ": \"",
+                    q.q,
+                    "\""),
+                React.createElement("div", { style: { fontSize: 14, color: T.ink, lineHeight: 1.5 } }, q.a))))),
+        React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 30, flexWrap: "wrap" } },
+            React.createElement(Btn, { icon: "rotateCcw", onClick: onAgain }, "Present again"),
+            React.createElement(Btn, { variant: "ghost", icon: "trendingUp", onClick: onDone }, "See progress")));
+}
+
+};
+</script>
+<script>
+(function(){
+  var REACT = [
+    "https://unpkg.com/react@18.3.1/umd/react.production.min.js",
+    "https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"
+  ];
+  var REACTDOM = [
+    "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js",
+    "https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"
+  ];
+  function loadSeq(urls, check, done){
+    if (check()) { done(true); return; }
+    var i = 0;
+    (function next(){
+      if (i >= urls.length) { done(false); return; }
+      var s = document.createElement("script");
+      s.src = urls[i++];
+      s.onload = function(){ check() ? done(true) : next(); };
+      s.onerror = next;
+      document.head.appendChild(s);
+    })();
+  }
+  function fail(){
+    var r = document.getElementById("root");
+    if (r) r.innerHTML = '<div style="max-width:520px;margin:90px auto;padding:0 24px;font-family:sans-serif;color:#EAEEF1;text-align:center">'
+      + '<div style="font-family:Newsreader,serif;font-size:22px;margin-bottom:10px">Couldn\'t load React</div>'
+      + '<div style="color:#93A0AC;line-height:1.6;font-size:14px">The app needs to fetch React from a CDN the first time. Connect to the internet once and reload — after that your browser caches it. If you are online and still see this, a firewall may be blocking unpkg / jsDelivr / cdnjs.</div></div>';
+  }
+  loadSeq(REACT, function(){ return !!window.React; }, function(okR){
+    if (!okR) return fail();
+    loadSeq(REACTDOM, function(){ return !!(window.ReactDOM && window.ReactDOM.createRoot); }, function(okD){
+      if (!okD) return fail();
+      try { window.startApp(); } catch (e) { console.error(e); fail(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>
