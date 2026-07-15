@@ -364,69 +364,184 @@ var store = {
 };
 
 /* ------------------------------ providers ------------------------------ */
+// `needsProxy` = the provider refuses direct browser calls (CORS), so the
+// request must be relayed through api/chat.js. The key still lives in this
+// browser either way — the relay just forwards it.
 var PROVIDERS = [
-  {id:'proxy',  label:'Server proxy (no key in browser)', def:'', hint:'/api/chat', where:'your Vercel deployment'},
-  {id:'gemini', label:'Google - Gemini',                  def:'gemini-2.5-flash', hint:'AIza...', where:'aistudio.google.com/apikey'},
-  {id:'anthropic',label:'Anthropic - Claude',             def:'claude-sonnet-5',  hint:'sk-ant-...', where:'console.anthropic.com'},
-  {id:'openai', label:'OpenAI-compatible (Qwen, OpenRouter...)', def:'qwen/qwen3-max', hint:'sk-...', where:"your provider's console"}
+  {id:'groq',   label:'Groq - free, fast, open models', def:'llama-3.3-70b-versatile', hint:'gsk_...', where:'console.groq.com', needsProxy:true},
+  {id:'gemini', label:'Google - Gemini',                def:'gemini-2.5-flash-lite', hint:'AIza...', where:'aistudio.google.com/apikey', needsProxy:false},
+  {id:'anthropic',label:'Anthropic - Claude (paid)',    def:'claude-sonnet-5',  hint:'sk-ant-...', where:'console.anthropic.com', needsProxy:true},
+  {id:'openai', label:'OpenAI-compatible (OpenRouter, Qwen...)', def:'qwen/qwen3-max', hint:'sk-...', where:"your provider's console", needsProxy:false}
 ];
+// Model shortcuts. Free-tier allowances change often — these are starting points.
+var MODEL_PRESETS = {
+  groq: [
+    {name:'Llama 3.3 70B', model:'llama-3.3-70b-versatile', note:'best free balance'},
+    {name:'GPT-OSS 120B', model:'openai/gpt-oss-120b', note:'strong reasoning'},
+    {name:'Kimi K2', model:'moonshotai/kimi-k2-instruct', note:'smartest, lower quota'}
+  ],
+  gemini: [
+    {name:'2.5 Flash-Lite', model:'gemini-2.5-flash-lite', note:'biggest free quota'},
+    {name:'2.5 Flash', model:'gemini-2.5-flash', note:'smarter, smaller quota'},
+    {name:'2.0 Flash', model:'gemini-2.0-flash', note:'older, fast'}
+  ],
+  anthropic: [
+    {name:'Sonnet', model:'claude-sonnet-5', note:'paid'},
+    {name:'Haiku', model:'claude-haiku-4-5-20251001', note:'cheapest'}
+  ],
+  openai: []
+};
 var OAI_PRESETS = [
   {name:'OpenRouter', url:'https://openrouter.ai/api/v1', model:'qwen/qwen3-max'},
+  {name:'OpenRouter (free)', url:'https://openrouter.ai/api/v1', model:'qwen/qwen3-30b-a3b:free'},
   {name:'Qwen (Intl)', url:'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model:'qwen-plus'},
-  {name:'OpenAI', url:'https://api.openai.com/v1', model:'gpt-4o-mini'},
-  {name:'Groq', url:'https://api.groq.com/openai/v1', model:'llama-3.3-70b-versatile'}
+  {name:'Groq', url:'https://api.groq.com/openai/v1', model:'llama-3.3-70b-versatile'},
+  {name:'Cerebras', url:'https://api.cerebras.ai/v1', model:'llama-3.3-70b'},
+  {name:'OpenAI', url:'https://api.openai.com/v1', model:'gpt-4o-mini'}
 ];
 
-function callModel(opts){
-  var system = opts.system, messages = opts.messages, maxTokens = opts.maxTokens || 1000;
-  var st = S.settings, p = st.provider, key = (st.apiKey||'').trim();
+function providerDef(id){ return PROVIDERS.filter(function(p){return p.id===id;})[0] || PROVIDERS[0]; }
 
-  if (p === 'proxy'){
-    return fetch(st.proxyUrl || '/api/chat', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ system:system, messages:messages, maxTokens:maxTokens })
-    }).then(chk).then(function(d){ return (d.text||'').trim(); });
-  }
-  if (!key) return Promise.reject(new Error('no_key'));
+// Builds the exact provider request. `wantJSON` turns on native JSON mode where
+// the provider supports it — this is what makes reports reliable.
+function buildRequest(system, messages, maxTokens, wantJSON){
+  var st = S.settings, p = st.provider, key = (st.apiKey||'').trim(), url, headers, body;
 
   if (p === 'gemini'){
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(st.model)+':generateContent';
-    return fetch(url, { method:'POST', headers:{'Content-Type':'application/json','x-goog-api-key':key},
-      body: JSON.stringify({
-        system_instruction:{ parts:[{text:system}] },
-        contents: messages.map(function(m){ return { role: m.role==='assistant'?'model':'user', parts:[{text:m.content}] }; }),
-        generationConfig:{ maxOutputTokens:maxTokens, temperature:0.9 }
-      })
-    }).then(chk).then(function(d){
-      var c = d.candidates && d.candidates[0];
-      var parts = (c && c.content && c.content.parts) || [];
-      return parts.map(function(x){return x.text||'';}).join('').trim();
-    });
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(st.model)+':generateContent?key='+encodeURIComponent(key);
+    headers = {'Content-Type':'application/json'};
+    var gen = { maxOutputTokens:maxTokens, temperature:0.9 };
+    // On Gemini 2.5+/3.x, "thinking" tokens are billed against maxOutputTokens.
+    // Left on, the model can spend the whole budget thinking and return EMPTY text.
+    if (/gemini-(2\.5|3)/.test(st.model)) gen.thinkingConfig = { thinkingBudget: 0 };
+    if (wantJSON) gen.responseMimeType = 'application/json';
+    body = {
+      systemInstruction:{ parts:[{text:system}] },
+      contents: messages.map(function(m){ return { role: m.role==='assistant'?'model':'user', parts:[{text:m.content}] }; }),
+      generationConfig: gen
+    };
+  } else if (p === 'anthropic'){
+    url = 'https://api.anthropic.com/v1/messages';
+    headers = {'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01'};
+    body = { model:st.model, max_tokens:maxTokens, temperature:0.9, system:system, messages:messages };
+  } else {
+    // groq + any OpenAI-compatible endpoint
+    var base = (p === 'groq') ? 'https://api.groq.com/openai/v1' : (st.baseUrl||'').replace(/\/+$/,'');
+    url = base.replace(/\/+$/,'') + '/chat/completions';
+    headers = {'Content-Type':'application/json','Authorization':'Bearer '+key};
+    body = { model:st.model, max_tokens:maxTokens, temperature:0.9,
+      messages:[{role:'system',content:system}].concat(messages) };
+    if (wantJSON) body.response_format = { type:'json_object' };
+    if (/gemini/i.test(st.model)) body.reasoning_effort = 'none';
   }
-  if (p === 'anthropic'){
-    return fetch('https://api.anthropic.com/v1/messages', { method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body: JSON.stringify({ model:st.model, max_tokens:maxTokens, system:system, messages:messages })
-    }).then(chk).then(function(d){
-      return (d.content||[]).map(function(b){return b.type==='text'?b.text:'';}).join('\n').trim();
-    });
+  return { url:url, headers:headers, body:body };
+}
+
+function extractText(kind, d){
+  if (kind === 'gemini'){
+    var c = d.candidates && d.candidates[0];
+    var parts = (c && c.content && c.content.parts) || [];
+    var txt = parts.map(function(x){return x.text||'';}).join('').trim();
+    if (!txt && c && c.finishReason === 'MAX_TOKENS') throw new Error('empty_maxtokens');
+    return txt;
   }
-  var base = (st.baseUrl||'').replace(/\/+$/,'');
-  return fetch(base+'/chat/completions', { method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-    body: JSON.stringify({ model:st.model, max_tokens:maxTokens, temperature:0.9,
-      messages:[{role:'system',content:system}].concat(messages) })
-  }).then(chk).then(function(d){
-    return ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
+  if (kind === 'anthropic') return (d.content||[]).map(function(b){return b.type==='text'?b.text:'';}).join('\n').trim();
+  return ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
+}
+
+function rawCall(opts){
+  var maxTokens = opts.maxTokens || 1200;
+  var st = S.settings, p = st.provider, key = (st.apiKey||'').trim();
+  if (!key) return Promise.reject(new Error('no_key'));
+
+  var def = providerDef(p);
+  var req = buildRequest(opts.system, opts.messages, maxTokens, !!opts.wantJSON);
+  var viaProxy = def.needsProxy || !!st.useProxy;
+
+  var fetchP = viaProxy
+    // Relay: the proxy forwards this verbatim. Key still comes from this browser.
+    ? fetch(st.proxyUrl || '/api/chat', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ url:req.url, headers:req.headers, body:req.body }) })
+    : fetch(req.url, { method:'POST',
+        headers: Object.assign({}, req.headers, p==='anthropic' ? {'anthropic-dangerous-direct-browser-access':'true'} : {}),
+        body: JSON.stringify(req.body) });
+
+  return fetchP.then(chk).then(function(d){
+    if (d && d.error && typeof d.error === 'string') throw new Error(d.error);
+    return extractText(p, d);
+  }).catch(function(e){
+    if (e instanceof TypeError && viaProxy === false && def.needsProxy === false){
+      var e2 = new Error('Could not reach '+p+' directly from the browser. Tick "Route via my proxy" in Settings and deploy api/chat.js (see README).');
+      throw e2;
+    }
+    throw e;
   });
 }
-function chk(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('api_'+r.status+': '+t.slice(0,140)); }); return r.json(); }
-function hasConn(){ return S.settings.provider === 'proxy' || !!(S.settings.apiKey||'').trim(); }
+function chk(r){
+  var ctype = r.headers.get('content-type') || '';
+  if (!r.ok || ctype.indexOf('json') === -1){
+    return r.text().then(function(t){
+      var e;
+      if (ctype.indexOf('text/html') !== -1){
+        e = new Error('Got an HTML page back instead of an API reply (status '+r.status+'). Your proxy URL is not pointing at a live api/chat.js — deploy to Vercel and use that URL, or untick the proxy for Gemini/OpenRouter.');
+      } else {
+        e = new Error(friendlyErr(r.status, t));
+      }
+      e.status = r.status; throw e;
+    });
+  }
+  return r.json();
+}
+function friendlyErr(status, body){
+  if (status === 429) return 'Rate limit or daily quota reached. Wait a minute — or switch to a model with a bigger free allowance (try gemini-2.5-flash-lite) in Settings.';
+  if (status === 401 || status === 403) return 'Your API key was rejected. Check it in Settings.';
+  if (status === 404) return 'That model name was not found. Check the Model field in Settings.';
+  if (status >= 500) return 'The provider had a server error. Try again in a moment.';
+  return 'Request failed (' + status + '): ' + String(body).slice(0, 120);
+}
+var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+
+// Retries once on rate-limit / transient failure.
+function callModel(opts){
+  return rawCall(opts).catch(function(e){
+    if (e.message === 'no_key') throw e;
+    if (e.status === 429 || e.status >= 500 || e.message === 'empty_maxtokens'){
+      return sleep(e.status === 429 ? 3000 : 800).then(function(){
+        return rawCall(Object.assign({}, opts, { maxTokens: Math.min((opts.maxTokens||1200)*2, 8000) }));
+      });
+    }
+    throw e;
+  });
+}
+
+// Asks for JSON, and if the model returns prose or half-JSON, repairs it instead of
+// silently falling back to a canned line.
+function callJSON(opts){
+  opts = Object.assign({}, opts, { wantJSON:true });
+  return callModel(opts).then(function(raw){
+    var d = parseJSON(raw, null);
+    if (d) return d;
+    if (!raw) throw new Error('The model returned an empty response. Try a different model in Settings.');
+    // one repair attempt: hand the prose back and ask for strict JSON
+    return callModel({
+      system: 'Convert the text into exactly the JSON object described. Output ONLY the JSON, nothing else.\n\nSCHEMA:\n' + (opts.schema || opts.system),
+      messages: [{ role:'user', content: raw.slice(0, 3000) }],
+      maxTokens: opts.maxTokens || 1200
+    }).then(function(fixed){
+      var d2 = parseJSON(fixed, null);
+      if (d2) return d2;
+      var err = new Error('The model would not return valid JSON.');
+      err.raw = raw;
+      throw err;
+    });
+  });
+}
+function hasConn(){ return !!(S.settings.apiKey||'').trim(); }
 
 /* ------------------------------ state / router ------------------------------ */
 var S = {
   view:'home', profile:null, sessions:[], session:null, pres:null,
-  settings:{ provider:'gemini', apiKey:'', model:'gemini-2.5-flash', baseUrl:'https://openrouter.ai/api/v1', proxyUrl:'/api/chat', hearThem:false }
+  settings:{ provider:'gemini', apiKey:'', model:'gemini-2.5-flash-lite', baseUrl:'https://openrouter.ai/api/v1', proxyUrl:'/api/chat', useProxy:false, hearThem:false, reactSecs:30 }
 };
 var cleanups = [];
 function onLeave(fn){ cleanups.push(fn); }
@@ -494,11 +609,18 @@ function openSettings(){
       plist.appendChild(h('button',{cls:'chip '+(st.provider===p.id?'on':''), style:'width:100%;font-size:14px',
         text:p.label, onclick:function(){pick(p.id);}}));
     });
-    keyWrap.style.display   = st.provider==='proxy' ? 'none' : 'block';
-    modelWrap.style.display = st.provider==='proxy' ? 'none' : 'block';
-    oaiWrap.style.display   = st.provider==='openai' ? 'block' : 'none';
-    proxyWrap.style.display = st.provider==='proxy' ? 'block' : 'none';
-    keyHint.textContent = 'From '+(PROVIDERS.filter(function(p){return p.id===st.provider;})[0]||{}).where+'. Stored only in this browser.';
+    var def = providerDef(st.provider);
+    oaiWrap.style.display = st.provider==='openai' ? 'block' : 'none';
+    keyHint.textContent = 'From '+def.where+'. Stored only in this browser.';
+    keyIn.placeholder = def.hint;
+    if (def.needsProxy) st.useProxy = true;
+    proxyTog.className = 'toggle '+(st.useProxy?'on':'');
+    proxyTog.style.opacity = def.needsProxy ? .55 : 1;
+    proxyIn.style.display = st.useProxy ? 'block' : 'none';
+    proxyNote.textContent = def.needsProxy
+      ? def.label.split(' -')[0]+' blocks direct browser calls, so the relay is required. Deploy api/chat.js (see README).'
+      : 'Only needed if this provider blocks browser calls. Leave off for Gemini / OpenRouter.';
+    if (typeof drawModelPresets === 'function'){ drawModelPresets(); modelIn.value = st.model; }
   }
   sheet.appendChild(plist);
 
@@ -511,19 +633,50 @@ function openSettings(){
   keyWrap.appendChild(keyIn);
   sheet.appendChild(keyWrap);
 
-  proxyWrap = h('div');
-  proxyWrap.appendChild(h('div',{cls:'faint',style:'font-size:12.5px;line-height:1.55;margin-bottom:8px',
-    text:'Calls go to your own server endpoint, which holds the key. No key in the browser, and any provider works (no CORS limits).'}));
-  var proxyIn = h('input',{cls:'input', value:st.proxyUrl, placeholder:'/api/chat'});
+  proxyWrap = h('div',{style:'margin-top:16px'});
+  var proxyTog = h('button',{cls:'toggle '+(st.useProxy?'on':''), role:'switch'},[h('span',{cls:'knob'})]);
+  var proxyNote = h('div',{cls:'faint',style:'font-size:12.5px;margin-top:2px;line-height:1.45'});
+  proxyWrap.appendChild(h('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:14px'},[
+    h('div',{},[ h('div',{style:'font-size:14px', text:'Route via my proxy'}), proxyNote ]), proxyTog ]));
+  var proxyIn = h('input',{cls:'input', style:'margin-top:10px', value:st.proxyUrl, placeholder:'/api/chat'});
   proxyIn.addEventListener('input', function(){ st.proxyUrl = proxyIn.value; });
   proxyWrap.appendChild(proxyIn);
+  proxyTog.addEventListener('click', function(){
+    if (providerDef(st.provider).needsProxy) return; // forced on
+    st.useProxy = !st.useProxy; proxyTog.className = 'toggle '+(st.useProxy?'on':'');
+    proxyIn.style.display = st.useProxy ? 'block' : 'none';
+  });
   sheet.appendChild(proxyWrap);
+
+  // Test connection — tells you exactly what's wrong before a session does.
+  var testBtn = btn('Test connection',{variant:'subtle', icon:'check', onclick:function(){
+    var prev = S.settings; S.settings = st;   // test with the pending values
+    testOut.textContent = 'Testing…'; testOut.style.color = 'var(--faint)';
+    rawCall({ system:'Reply with exactly one word: pong', messages:[{role:'user',content:'ping'}], maxTokens:200 })
+      .then(function(t){ testOut.textContent = 'Connected — model said: "'+String(t).trim().slice(0,40)+'"'; testOut.style.color = 'var(--green)'; })
+      .catch(function(e){ testOut.textContent = (e.message==='no_key'?'No API key entered.':e.message); testOut.style.color = 'var(--rose)'; })
+      .then(function(){ S.settings = prev; });
+  }});
+  var testOut = h('div',{style:'font-size:12.5px;line-height:1.5;margin-top:10px;color:var(--faint)'});
+  sheet.appendChild(h('div',{style:'margin-top:14px'},[testBtn, testOut]));
 
   modelWrap = h('div',{style:'margin-top:14px'});
   modelWrap.appendChild(h('label',{style:'font-size:13.5px;font-weight:500', text:'Model'}));
   modelWrap.appendChild(h('div',{cls:'faint',style:'font-size:12px;margin:3px 0 8px', text:'Edit to any model your key can use.'}));
+  var modelPresets = h('div',{cls:'row', style:'gap:6px;margin-bottom:8px'});
   var modelIn = h('input',{cls:'input', value:st.model});
   modelIn.addEventListener('input', function(){ st.model = modelIn.value; });
+  function drawModelPresets(){
+    clear(modelPresets);
+    (MODEL_PRESETS[st.provider]||[]).forEach(function(mp){
+      modelPresets.appendChild(h('button',{cls:'pill '+(st.model===mp.model?'on':''), title:mp.note, onclick:function(){
+        st.model = mp.model; modelIn.value = mp.model;
+        Array.prototype.forEach.call(modelPresets.children, function(c){ c.className='pill'; });
+        this.className = 'pill on';
+      }}, mp.name + ' · ' + mp.note));
+    });
+  }
+  modelWrap.appendChild(modelPresets);
   modelWrap.appendChild(modelIn);
   sheet.appendChild(modelWrap);
 
@@ -544,6 +697,20 @@ function openSettings(){
   oaiWrap.appendChild(h('div',{cls:'faint',style:'font-size:11.5px;margin-top:8px;line-height:1.5',
     text:'Browsers can only call providers that allow cross-origin requests. Gemini, Anthropic and OpenRouter work directly; OpenAI-direct and DashScope usually need the server proxy above.'}));
   sheet.appendChild(oaiWrap);
+
+  sheet.appendChild(h('div',{cls:'hr'}));
+  sheet.appendChild(eyebrow('Audience reaction pace','gold'));
+  sheet.appendChild(h('div',{cls:'faint', style:'font-size:12.5px;line-height:1.5;margin:8px 0 10px',
+    text:'How often the presentation audience re-reacts. Slower = far fewer API requests, which matters on a free tier.'}));
+  var paceRow = h('div',{cls:'row', style:'gap:6px;margin-bottom:4px'});
+  [[20,'Lively'],[30,'Balanced'],[45,'Frugal'],[90,'Very frugal']].forEach(function(o){
+    paceRow.appendChild(h('button',{cls:'pill '+(st.reactSecs===o[0]?'on':''), onclick:function(){
+      st.reactSecs = o[0];
+      Array.prototype.forEach.call(paceRow.children, function(c){ c.className='pill'; });
+      this.className='pill on';
+    }}, o[1]+' · '+o[0]+'s'));
+  });
+  sheet.appendChild(paceRow);
 
   sheet.appendChild(h('div',{cls:'hr'}));
   var tog = h('button',{cls:'toggle '+(st.hearThem?'on':''), role:'switch'},[h('span',{cls:'knob'})]);
@@ -938,10 +1105,13 @@ function viewRoom(){
       ? transcript.map(function(t){ return { role: t.by==='me'?'user':'assistant', content:t.text }; })
       : [{role:'user', content:"I've just sat down. I'm ready to begin."}];
     if (msgs[0].role !== 'user') msgs.unshift({role:'user',content:"Let's begin."});
-    callModel({ system:buildSystem(sess,docCtx,closing), messages:msgs, maxTokens:400 })
-    .then(function(raw){
-      var t = parseJSON(raw, null) || {speech: raw || 'Tell me more.', mood:'neutral', action:'', kind:'question'};
-      var entry = {by:'them', text:t.speech||'...', mood:t.mood||'neutral', action:t.action||'', kind:t.kind||'question'};
+    callJSON({ system:buildSystem(sess,docCtx,closing), messages:msgs, maxTokens:800,
+      schema:'{"speech":string,"mood":one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted],"action":string,"kind":one of [question,followup,challenge,reaction,silence,closing]}' })
+    .then(function(t){
+      // If the model gave prose instead of JSON, use the prose as speech rather than a canned line.
+      if (typeof t === 'string') t = { speech:t, mood:'neutral', kind:'question' };
+      if (!t.speech) throw new Error('The model returned no reply. Try another model in Settings.');
+      var entry = {by:'them', text:t.speech, mood:t.mood||'neutral', action:t.action||'', kind:t.kind||'question'};
       transcript.push(entry);
       setThinking(false);
       moodTxt.textContent = moodOf(entry.mood).l.toLowerCase();
@@ -956,7 +1126,7 @@ function viewRoom(){
     })
     .catch(function(e){
       setThinking(false);
-      showErr(e.message==='no_key' ? 'Add a model key in Settings to continue.' : 'That did not go through. '+(e.message||''), function(){ advance(closing); });
+      showErr(e.message==='no_key' ? 'Add a model key in Settings to continue.' : (e.message || 'That did not go through.'), function(){ advance(closing); });
     });
   }
 
@@ -982,19 +1152,22 @@ function viewRoom(){
   setThinking(true);
   (function(){
     if (sess.mode !== 'interview'){ advance(false); return; }
-    callModel({
-      system:'Extract a concise interview brief from a CV and job description. Return ONLY JSON: {candidateName, role, skills:[up to 6], focusAreas:[up to 5], notableProjects:[up to 3], possibleWeakSpots:[up to 3]}.',
+    callJSON({
+      system:'Extract a concise interview brief from a CV and job description. Return ONLY JSON: {"candidateName":string,"role":string,"skills":[up to 6],"focusAreas":[up to 5],"notableProjects":[up to 3],"possibleWeakSpots":[up to 3]}.',
       messages:[{role:'user', content:'CV:\n'+sess.cv+'\n\nJOB DESCRIPTION:\n'+sess.jd+'\n\nCOMPANY:\n'+(sess.company||'n/a')}],
-      maxTokens:500
-    }).then(function(raw){
-      var b = parseJSON(raw, {}) || {};
+      maxTokens:900
+    }).then(function(b){
+      b = b || {};
       docCtx = 'Candidate: '+(b.candidateName||'the candidate')+'. Role: '+(b.role||'the role')+'.\n'+
         'Skills: '+((b.skills||[]).join(', '))+'.\nFocus areas: '+((b.focusAreas||[]).join(', '))+'.\n'+
         'Notable projects: '+((b.notableProjects||[]).join('; '))+'.\nWatch for: '+((b.possibleWeakSpots||[]).join('; '))+'.';
       advance(false);
     }).catch(function(e){
-      setThinking(false);
-      showErr(e.message==='no_key' ? 'Add a model key in Settings to begin.' : 'Could not reach the model. '+(e.message||''), function(){ go('room'); });
+      // Brief is a nice-to-have — if it fails, still start the interview with the raw docs.
+      if (e.message === 'no_key'){ setThinking(false); showErr('Add a model key in Settings to begin.', function(){ go('room'); }); return; }
+      if (e.status === 429){ setThinking(false); showErr(e.message, function(){ go('room'); }); return; }
+      docCtx = 'CV (excerpt): '+sess.cv.slice(0,900)+'\nJob description (excerpt): '+sess.jd.slice(0,700);
+      advance(false);
     });
   })();
 
@@ -1041,6 +1214,33 @@ function fillerChips(hits){
   c.appendChild(row); return c;
 }
 
+/* ---- score handling -------------------------------------------------
+   Models sometimes return scores as strings, nested oddly, or omit keys.
+   Never lose a finished session over that: coerce what came back, and
+   fill any gaps with a local estimate from the measured stats.        */
+function localScores(st){
+  // st: {answers, avgWords, avgSec, fillers, totalWords}
+  var depth = Math.min(100, 30 + (st.avgWords||0) * 0.9);            // substance
+  var fillRate = st.totalWords ? (st.fillers / st.totalWords) * 100 : 0;
+  var clean = Math.max(30, 100 - fillRate * 12);                     // filler penalty
+  var pace = st.avgSec ? Math.max(35, 100 - Math.abs(st.avgSec - 75) * 0.6) : 60;
+  var base = Math.round((depth + clean + pace) / 3);
+  return { overall:base, confidence:clean, clarity:base, storytelling:depth,
+    executivePresence:base, technical:base, leadership:base, listening:base,
+    structure:base, pacing:pace, engagement:base, vocalEnergy:base };
+}
+function normalizeScores(a, stats, keys){
+  var src = (a && typeof a.scores === 'object' && a.scores) ? a.scores : (a || {});
+  var fb = localScores(stats);
+  var out = {}, got = 0;
+  keys.forEach(function(k){
+    var v = Number(src[k]);
+    if (isFinite(v) && v > 0){ out[k] = clamp(v); got++; }
+    else out[k] = clamp(fb[k] !== undefined ? fb[k] : fb.overall);
+  });
+  return { scores: out, estimated: got === 0 };
+}
+
 function viewReport(){
   var sess = S.session;
   var root = h('div',{cls:'mid', style:'padding-top:34px'});
@@ -1056,45 +1256,77 @@ function viewReport(){
 
   var kind = sess.mode==='interview' ? 'job interview' : 'workplace conversation';
   var text = sess.transcript.map(function(t){ return (t.by==='me'?'CANDIDATE':'INTERVIEWER')+': '+t.text; }).join('\n\n');
+  var stats = { answers:mine.length, avgWords:avgW, avgSec:avgS, fillers:totF, totalWords:totW };
+  var SCORE_KEYS = ['overall','confidence','clarity','storytelling','executivePresence','technical','leadership','listening'];
 
-  callModel({
-    system:'You are an elite communication coach reviewing a practice '+kind+'. Be specific, honest and encouraging. Return ONLY JSON:\n'+
-      '{"scores":{"overall":int,"confidence":int,"clarity":int,"storytelling":int,"executivePresence":int,"technical":int,"leadership":int,"listening":int},'+
-      '"strengths":[3 short specific strings],"improvements":[3 short specific strings],"summary":"2-3 sentence coach read"}  (scores 0-100)',
-    messages:[{role:'user', content:'TRANSCRIPT:\n'+text+'\n\nMEASURED: '+mine.length+' answers, avg '+avgW+' words, avg '+avgS+'s each, '+totF+' filler words.'}],
-    maxTokens:700
-  }).then(function(raw){
-    var a = parseJSON(raw,null);
-    if (!a || !a.scores) throw new Error('bad');
-    clear(root); build(a);
-    // learn profile in background
-    return callModel({
-      system:'Analyse how this person communicates from their own words. Return ONLY JSON: {"voiceSummary":"one vivid sentence","strengths":[3 short],"growthAreas":[3 short],"favouritePhrases":[up to 4 short]}',
-      messages:[{role:'user', content: mine.map(function(x){return x.t.text;}).join('\n\n') || 'No answers.'}],
-      maxTokens:500
-    }).then(function(pr){
-      var np = parseJSON(pr,null);
-      if (np && np.voiceSummary){
-        var merged = Object.assign({}, S.profile||{}, np, {updatedAt:Date.now(), sessions:((S.profile&&S.profile.sessions)||0)+1});
-        saveProfile(merged);
-      }
-      var whoName = sess.mode==='interview'
-        ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
-        : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
-      saveSessions((S.sessions||[]).concat([{date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall}]).slice(-40));
-    }).catch(function(){});
-  }).catch(function(e){
+  // Nothing was said — there is nothing to score. Say so plainly.
+  if (!mine.length){
     clear(root);
-    root.appendChild(h('div',{cls:'center', style:'padding-top:100px'},[
-      h('p',{style:'color:var(--rose)', text:'The coaching report did not come through. '+(e.message||'')}),
-      btn('Back to setup',{variant:'subtle', onclick:function(){ go('setup'); }})
+    root.appendChild(h('div',{cls:'center', style:'padding-top:90px;max-width:440px;margin:0 auto'},[
+      h('h2',{style:'font-family:var(--serif);font-weight:500;font-size:26px;margin:0 0 8px', text:'No answers to score'}),
+      h('p',{cls:'muted', style:'font-size:14.5px;line-height:1.55;margin:0 0 22px',
+        text:'You left before answering anything. Give it at least one answer and I can score your delivery and coach the wording.'}),
+      h('div',{cls:'row', style:'justify-content:center'},[
+        btn('Back to setup',{icon:'redo', onclick:function(){ go('setup'); }}),
+        btn('Studio',{variant:'ghost', onclick:function(){ go('home'); }})
+      ])
     ]));
+    return root;
+  }
+
+  // ONE call does scoring AND voice-profile learning (was two — halves free-tier usage).
+  callJSON({
+    system:'You are an elite communication coach reviewing a practice '+kind+'. Be specific, honest and encouraging.\n'+
+      'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
+      '{"scores":{"overall":75,"confidence":70,"clarity":80,"storytelling":65,"executivePresence":70,"technical":72,"leadership":68,"listening":74},'+
+      '"strengths":["...","...","..."],"improvements":["...","...","..."],"summary":"2-3 sentences on how they came across",'+
+      '"voiceSummary":"one vivid sentence describing how THEY naturally talk","growthAreas":["...","...","..."],"favouritePhrases":["..."]}',
+    schema:'{"scores":{"overall":int,"confidence":int,"clarity":int,"storytelling":int,"executivePresence":int,"technical":int,"leadership":int,"listening":int},"strengths":[3 strings],"improvements":[3 strings],"summary":string,"voiceSummary":string,"growthAreas":[3 strings],"favouritePhrases":[strings]}',
+    messages:[{role:'user', content:'TRANSCRIPT:\n'+text+'\n\nMEASURED: '+mine.length+' answers, avg '+avgW+' words, avg '+avgS+'s each, '+totF+' filler words.'}],
+    maxTokens:1600
+  }).then(function(a){
+    a = a || {};
+    var norm = normalizeScores(a, stats, SCORE_KEYS);
+    a.scores = norm.scores;
+    a.estimated = norm.estimated;
+    if (!a.summary) a.summary = norm.estimated
+      ? 'Scores below are estimated from your pace, length and filler words — the model did not return its own scoring this time.'
+      : 'Here is how that session came across.';
+    if (!a.strengths || !a.strengths.length) a.strengths = ['You showed up and practised — that is the part most people skip.'];
+    if (!a.improvements || !a.improvements.length) a.improvements = ['Add a concrete example with a number to your strongest answer.'];
+    clear(root); build(a);
+    if (a.voiceSummary){
+      saveProfile(Object.assign({}, S.profile||{}, {
+        voiceSummary:a.voiceSummary, strengths:a.strengths, growthAreas:a.growthAreas,
+        favouritePhrases:a.favouritePhrases, updatedAt:Date.now(), sessions:((S.profile&&S.profile.sessions)||0)+1
+      }));
+    }
+    var whoName = sess.mode==='interview'
+      ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
+      : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
+    saveSessions((S.sessions||[]).concat([{date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall}]).slice(-40));
+  }).catch(function(e){
+    // Total failure (quota, key, network). Still show the session with local scores.
+    var norm = normalizeScores(null, stats, SCORE_KEYS);
+    clear(root);
+    root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
+      h('span',{text: (e && e.message) || 'The coach could not be reached, so scores below are estimated locally.'}),
+      h('div',{cls:'row'},[
+        btn('Try again',{variant:'subtle', icon:'redo', onclick:function(){ go('report'); }}),
+        btn('Settings',{variant:'ghost', icon:'sliders', onclick:openSettings})
+      ])
+    ]));
+    build({ scores:norm.scores, estimated:true,
+      summary:'Estimated from your pace, answer length and filler words. Reconnect a model for full coaching.',
+      strengths:['Session saved — your transcript is intact below.'],
+      improvements:['Retry the report once your model connection works.'] });
   });
 
   function build(a){
     var s = a.scores;
     root.appendChild(stepper(3));
     root.appendChild(h('h2',{cls:'title', text:'Your coaching report'}));
+    if (a.estimated) root.appendChild(h('div',{style:'display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);border:1px solid var(--goldDim);border-radius:20px;padding:3px 11px;margin-bottom:12px', text:'Estimated locally'}));
     root.appendChild(h('p',{cls:'quote muted', style:'font-size:15px;margin:0 0 26px;line-height:1.55', text:a.summary}));
 
     var top = h('div',{cls:'grid twocol', style:'grid-template-columns:minmax(0,220px) 1fr;align-items:start'});
@@ -1170,14 +1402,14 @@ function viewReport(){
       clear(body);
       body.appendChild(h('div',{cls:'faint', style:'display:flex;align-items:center;gap:9px;font-size:13.5px',
         html: icon('load',15,'currentColor','spin')+'<span style="margin-left:4px">Writing a version in your voice...</span>'}));
-      callModel({
+      callJSON({
         system:"You are this person's private communication coach. Help them say what THEY would say - with more structure, confidence and evidence - WITHOUT changing their personality, vocabulary or voice. The rewrite must still sound unmistakably like them, not a polished AI answer.\n"+
           ((S.profile&&S.profile.voiceSummary)?('How they naturally talk: '+S.profile.voiceSummary+'\n'):'')+
           'Return ONLY JSON:\n{"worked":"1 sentence","improve":"1 sentence","why":"1 sentence","improved":"their answer rewritten in their own voice","whyBetter":"1-2 sentences"}',
         messages:[{role:'user', content:'QUESTION: '+question+'\n\nTHEIR ANSWER: '+t.text}],
-        maxTokens:700
-      }).then(function(raw){
-        var d = parseJSON(raw,null); if(!d) throw new Error('bad');
+        maxTokens:900
+      }).then(function(d){
+        if(!d || !d.improved) throw new Error('The model did not return a rewrite. Try again, or switch model in Settings.');
         clear(body);
         var g = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;gap:12px'});
         g.appendChild(mini('Worked', d.worked, 'teal'));
@@ -1191,10 +1423,10 @@ function viewReport(){
         rw.appendChild(h('p',{style:'margin:0;font-size:14.5px;line-height:1.6;font-family:var(--serif)', text:d.improved}));
         if (d.whyBetter) rw.appendChild(h('p',{cls:'faint', style:'margin:12px 0 0;font-size:12.5px;line-height:1.5;border-top:1px solid var(--lineSoft);padding-top:10px', text:d.whyBetter}));
         body.appendChild(rw);
-      }).catch(function(){
+      }).catch(function(e){
         clear(body);
-        body.appendChild(h('div',{style:'color:var(--rose);font-size:13.5px'},[
-          h('span',{text:'Could not coach this one. '}),
+        body.appendChild(h('div',{style:'color:var(--rose);font-size:13.5px;line-height:1.5'},[
+          h('span',{text:(e && e.message && e.message !== 'bad') ? e.message+' ' : 'Could not coach this one. '}),
           h('button',{style:'background:none;border:none;color:var(--gold);cursor:pointer', text:'Retry', onclick:coach})
         ]));
       });
@@ -1332,12 +1564,11 @@ function viewStage(){
   // build placeholder faces while roster loads
   audRow.appendChild(h('div',{cls:'faint', style:'font-size:13.5px;padding:12px', text:'Seating your audience...'}));
 
-  callModel({
+  callJSON({
     system:'Create a realistic audience for a talk. Return ONLY JSON: {"members":[{"id":"m1","name":"First Last","role":"short role"}]}. Exactly '+at.n+' members, varied names and roles fitting the setting.',
     messages:[{role:'user', content:'Setting: '+at.name+'. Talk topic (from the speaker notes): '+(cfg.content.slice(0,240)||'a work update')+'.'}],
-    maxTokens:400
-  }).then(function(raw){
-    var d = parseJSON(raw,null);
+    maxTokens:700
+  }).then(function(d){
     seat((d && d.members) ? d.members : null);
   }).catch(function(){ seat(null); });
 
@@ -1431,8 +1662,8 @@ function viewStage(){
         paceM.val.style.color = wpm>165 ? 'var(--rose)' : (w && wpm<105 ? 'var(--gold)' : 'var(--teal)');
       }
     },1000);
-    reactTimer = setInterval(react, 14000);
-    setTimeout(react, 4000);
+    reactTimer = setInterval(react, (S.settings.reactSecs || 30) * 1000);
+    setTimeout(react, 5000);
   }
   function stopRun(){
     running = false;
@@ -1490,25 +1721,36 @@ function viewStage(){
   function react(){
     if (!audience.length) return;
     var full = fullText(), w = full ? full.split(/\s+/) : [];
-    if (SR && w.length > lastWords + 4){
+    if (SR && w.length > lastWords + 12){
       lastWords = w.length;
-      callModel({
+      callJSON({
         system:'You simulate a live audience for a talk. Members:\n'+
           audience.map(function(m){return m.id+' = '+m.name+' ('+m.role+')';}).join('\n')+
           "\nGiven what the speaker just said, decide how each member is reacting RIGHT NOW. Be honest: rambling or unclear -> some get bored/confused/distracted; compelling and clear -> engaged/impressed/nodding. Vary reactions across people.\n"+
           'Return ONLY JSON: {"members":[{"id":"m1","mood":one of [engaged,curious,impressed,nodding,neutral,bored,confused,skeptical,distracted,notes],"thought":"under 7 words"}],"engagement":0-100}',
         messages:[{role:'user', content:'RECENT SPEECH: '+w.slice(-90).join(' ')+'\n\nSeconds in: '+elapsed+'. Give current reactions.'}],
-        maxTokens:400
-      }).then(function(raw){
-        var d = parseJSON(raw,null); if(!d||!d.members) return;
+        maxTokens:800
+      }).then(function(d){
+        if(!d||!d.members) return;
         var map={}; d.members.forEach(function(x){ map[x.id]=x; });
         audience.forEach(function(m){ if(map[m.id]) setMood(m, map[m.id].mood||m.mood, map[m.id].thought); });
         if (typeof d.engagement === 'number'){ engSamples.push(d.engagement); engLabel.textContent = 'engagement '+Math.round(d.engagement)+'%'; }
-      }).catch(function(){});
+      }).catch(function(err){
+        // A quota error mid-talk shouldn't kill the session — drift instead, and say so once.
+        if (err && err.status === 429 && !window.__quotaWarned){
+          window.__quotaWarned = true;
+          micNote2.style.display='block';
+          micNote2.textContent = 'Hit the model rate limit — the audience will keep drifting, but reactions have paused. Slow the reaction pace in Settings, or use gemini-2.5-flash-lite.';
+        }
+        drift();
+      });
     } else {
-      var pool = ['engaged','neutral','curious','nodding','bored','distracted','notes','neutral'];
-      audience.forEach(function(m){ if (Math.random()<0.4) setMood(m, pool[Math.floor(Math.random()*pool.length)], ''); });
+      drift();
     }
+  }
+  function drift(){
+    var pool = ['engaged','neutral','curious','nodding','bored','distracted','notes','neutral'];
+    audience.forEach(function(m){ if (Math.random()<0.4) setMood(m, pool[Math.floor(Math.random()*pool.length)], ''); });
   }
   function toggleCam(){
     if (video){ try{vstream.getTracks().forEach(function(t){t.stop();});}catch(e){} document.body.removeChild(video); video=null; camBtn.textContent='self-view off'; return; }
@@ -1559,12 +1801,12 @@ function viewStage(){
       asker = audience[Math.floor(Math.random()*audience.length)] || {name:'Someone', role:'audience', id:'m1'};
       Object.keys(tiles).forEach(function(k){ tiles[k].face.style.borderColor = audMood(audience.filter(function(m){return m.id===k;})[0].mood).c; });
       if (tiles[asker.id]) tiles[asker.id].face.style.borderColor = 'var(--gold)';
-      callModel({
+      callJSON({
         system:'You are '+asker.name+', '+asker.role+', in the audience after a talk. Ask ONE realistic, specific question about what was said - curious or challenging. Return ONLY JSON: {"question": string}.',
         messages:[{role:'user', content:'TALK:\n'+fullText().slice(0,2200)+(qaList.length?('\n\nAlready asked: '+qaList.map(function(q){return q.q;}).join(' | ')):'')}],
-        maxTokens:200
-      }).then(function(raw){
-        var d = parseJSON(raw,{question:'Can you say more about your main point?'});
+        maxTokens:500
+      }).then(function(d){
+        if (!d || !d.question) d = {question:'Can you say more about your main point?'};
         if (loading.parentNode) qBox.removeChild(loading);
         qText.textContent = ''; qText.appendChild(h('span',{style:'color:var(--gold)', text:asker.name+': '}));
         qText.appendChild(h('span',{text:'"'+d.question+'"'}));
@@ -1612,31 +1854,58 @@ function viewPresReport(){
   var root = h('div',{cls:'mid', style:'padding-top:34px'});
   root.appendChild(loadingPane('Reading the room back...','Scoring your delivery.'));
 
-  callModel({
-    system:'You are an elite presentation coach. Review a rehearsed talk honestly and specifically. Return ONLY JSON:\n'+
-      '{"scores":{"overall":int,"clarity":int,"structure":int,"pacing":int,"engagement":int,"confidence":int,"vocalEnergy":int},'+
-      '"strongest":"one specific strength","weakest":"one specific thing to fix","suggestions":[3 short specific tips],"summary":"2-3 sentence read"} (scores 0-100)',
+  var PKEYS = ['overall','clarity','structure','pacing','engagement','confidence','vocalEnergy'];
+  var pstats = { answers:1, avgWords:words(p.transcript||''), avgSec:p.durationSec||0,
+    fillers:(p.fillers&&p.fillers.n)||0, totalWords:words(p.transcript||'') };
+
+  if (!p.transcript || !words(p.transcript)){
+    clear(root);
+    root.appendChild(h('div',{cls:'center', style:'padding-top:90px;max-width:440px;margin:0 auto'},[
+      h('h2',{style:'font-family:var(--serif);font-weight:500;font-size:26px;margin:0 0 8px', text:'No talk to score'}),
+      h('p',{cls:'muted', style:'font-size:14.5px;line-height:1.55;margin:0 0 22px',
+        text:'Nothing was captured. Present out loud (Chrome or Edge, mic allowed) and the audience will react and score you.'}),
+      h('div',{cls:'row', style:'justify-content:center'},[ btn('Back',{icon:'redo', onclick:function(){ go('pres'); }}), btn('Studio',{variant:'ghost', onclick:function(){ go('home'); }}) ])
+    ]));
+    return root;
+  }
+
+  callJSON({
+    system:'You are an elite presentation coach. Review a rehearsed talk honestly and specifically.\n'+
+      'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
+      '{"scores":{"overall":72,"clarity":75,"structure":68,"pacing":70,"engagement":74,"confidence":71,"vocalEnergy":66},'+
+      '"strongest":"one specific strength","weakest":"one specific thing to fix","suggestions":["...","...","..."],"summary":"2-3 sentences"}',
+    schema:'{"scores":{"overall":int,"clarity":int,"structure":int,"pacing":int,"engagement":int,"confidence":int,"vocalEnergy":int},"strongest":string,"weakest":string,"suggestions":[3 strings],"summary":string}',
     messages:[{role:'user', content:'TALK TRANSCRIPT:\n'+(p.transcript||'(no speech captured)')+
       '\n\nMEASURED: '+(Math.round(p.durationSec/60*10)/10)+' min spoken, target '+p.mins+' min, '+p.wpm+' wpm, '+
       (p.fillers.n||0)+' fillers, '+p.overtimeWords+' words over time, avg audience engagement '+p.avgEngagement+'%.'}],
-    maxTokens:700
-  }).then(function(raw){
-    var a = parseJSON(raw,null);
-    if (!a || !a.scores) throw new Error('bad');
+    maxTokens:1400
+  }).then(function(a){
+    a = a || {};
+    var norm = normalizeScores(a, pstats, PKEYS);
+    a.scores = norm.scores; a.estimated = norm.estimated;
+    if (!a.summary) a.summary = norm.estimated ? 'Scores below are estimated from your pace, length and fillers.' : 'Here is how it landed.';
+    if (!a.strongest) a.strongest = 'You rehearsed the whole thing out loud — that alone builds fluency.';
+    if (!a.weakest) a.weakest = 'Tighten the opening so the first 20 seconds state your point.';
+    if (!a.suggestions || !a.suggestions.length) a.suggestions = ['Open with your conclusion.','Pause instead of using filler words.','Watch your pace in the middle third.'];
     clear(root); build(a);
     saveSessions((S.sessions||[]).concat([{date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:a.scores.overall}]).slice(-40));
   }).catch(function(e){
+    var norm = normalizeScores(null, pstats, PKEYS);
     clear(root);
-    root.appendChild(h('div',{cls:'center', style:'padding-top:100px'},[
-      h('p',{style:'color:var(--rose)', text:'The report did not come through. '+(e.message||'')}),
-      btn('Back',{variant:'subtle', onclick:function(){ go('pres'); }})
+    root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
+      h('span',{text:(e && e.message) || 'The coach could not be reached, so scores below are estimated locally.'}),
+      h('div',{cls:'row'},[ btn('Try again',{variant:'subtle', icon:'redo', onclick:function(){ go('presReport'); }}), btn('Settings',{variant:'ghost', icon:'sliders', onclick:openSettings}) ])
     ]));
+    build({ scores:norm.scores, estimated:true, summary:'Estimated from pace, length and fillers. Reconnect a model for full coaching.',
+      strongest:'Your talk is saved below.', weakest:'Retry the report once your model connection works.',
+      suggestions:['Open with your conclusion.','Replace filler words with pauses.','Keep an even pace.'] });
   });
 
   function build(a){
     var s = a.scores;
     root.appendChild(eyebrow('Presentation report','gold'));
     root.appendChild(h('h2',{cls:'title', text:'How it landed'}));
+    if (a.estimated) root.appendChild(h('div',{style:'display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);border:1px solid var(--goldDim);border-radius:20px;padding:3px 11px;margin-bottom:12px', text:'Estimated locally'}));
     root.appendChild(h('p',{cls:'quote muted', style:'font-size:15px;margin:0 0 24px;line-height:1.55', text:a.summary}));
 
     var top = h('div',{cls:'grid twocol', style:'grid-template-columns:minmax(0,220px) 1fr;align-items:start'});
