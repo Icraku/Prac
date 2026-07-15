@@ -1,90 +1,138 @@
 # The Room — AI Workplace Communication Simulator
 
-A single-file web app. **Zero dependencies**: no React, no build step, no CDN,
-no web fonts. `index.html` runs on its own, offline, from anywhere.
+Single-file app. **Zero dependencies**: no React, no build step, no CDN, no web
+fonts. `index.html` runs on its own from anywhere.
 
 Modules: Interview Simulator · Workplace Scenarios · Presentation Studio
 (reactive audience) · Progress & Profile.
 
 ---
 
-## Option A — Static hosting (GitHub Pages, Netlify, or just open the file)
+## How the two files fit together
 
-1. Commit `index.html` to your repo (root or `/docs`).
-2. Settings → Pages → pick that branch/folder.
-3. Open the site, click the **sliders icon**, choose a provider, paste your API key, Save.
+- **`index.html`** — the whole app. Your API key lives in *your browser*.
+- **`api/chat.js`** — an optional **relay**. Some providers refuse direct calls
+  from a browser (CORS); this forwards those requests server-side.
 
-The key is stored in *your own browser's* localStorage. Nothing is sent anywhere
-except directly to the model provider you chose. This is fine for personal use
-even on a public URL — every visitor has their own empty storage.
+The client sends the relay `{ url, headers, body }` and the relay forwards it
+verbatim. **These two must match** — if you swap in a different `chat.js`
+(e.g. one that expects `{system, messages}` and reads env vars), every call
+returns 400 and reports never generate.
 
-Browsers can only call providers that permit cross-origin requests:
-
-| Provider | Direct from browser? |
-|---|---|
-| Google Gemini | yes |
-| Anthropic Claude | yes |
-| OpenRouter (incl. Qwen, Llama, DeepSeek) | yes |
-| OpenAI direct | usually blocked → use Option B |
-| Alibaba DashScope (Qwen) | usually blocked → use Option B |
-
-**Cheapest way to start:** Gemini (`gemini-2.5-flash`) has a free tier.
-**Want Qwen without a server:** pick *OpenAI-compatible* → **OpenRouter** preset.
+No environment variables are needed. Deploy and go.
 
 ---
 
-## Option B — Vercel (key stays on the server, every provider works)
+## Which providers need the relay?
 
-Use this if you want the key hidden, or you need OpenAI-direct / DashScope.
+| Provider | Direct from browser | Notes |
+|---|---|---|
+| **Groq** | ✗ needs relay | Free, fast, no card. Best default. |
+| **Google Gemini** | ✓ | Free daily quota. `flash-lite` stretches furthest. |
+| **OpenRouter** (Qwen, Llama, DeepSeek) | ✓ | Paid, cheap; some `:free` models. |
+| **Anthropic Claude** | ✗ needs relay | Paid only. |
 
-```
-your-repo/
-  index.html
-  api/chat.js
-```
+On **GitHub Pages** there is no server, so `api/chat.js` does nothing — use
+**Gemini** or **OpenRouter** with the proxy toggle **off**.
+For **Groq** or **Anthropic**, deploy to Vercel (below).
 
-1. Push to GitHub, then "Add New Project" on vercel.com and import the repo.
-2. Framework preset: **Other**. No build command. Output directory: leave blank.
-3. Add Environment Variables (Project → Settings → Environment Variables):
-
-| Name | Example |
-|---|---|
-| `PROVIDER` | `gemini` · `anthropic` · `openai` |
-| `API_KEY` | your key |
-| `MODEL` | `gemini-2.5-flash` |
-| `BASE_URL` | only if `PROVIDER=openai` |
-
-   Qwen via DashScope:
-   `PROVIDER=openai`,
-   `BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1`,
-   `MODEL=qwen-plus`
-
-4. Deploy. Open the site → sliders icon → provider **“Server proxy”** → leave
-   the URL as `/api/chat` → Save.
-
-Now the browser calls only your own `/api/chat`, and the key never leaves Vercel.
-
-> A deployed proxy will happily answer anyone who finds the URL. If the site is
-> public, set `ALLOW_ORIGIN` to your domain and consider adding auth.
+Use **Settings → Test connection** before a session. It tells you exactly what's
+wrong (bad key, wrong model name, quota, proxy not deployed) instead of failing
+mid-interview.
 
 ---
 
-## Speaking & the audience
+## Option A — GitHub Pages / Netlify / open the file
 
-- **Mic (speech-to-text)** works in **Chrome / Edge**. Safari is patchy,
-  Firefox doesn't support it. Without it you can still type, and the
-  presentation timer/meters still work.
-- The mic needs **HTTPS or `localhost`** — GitHub Pages and Vercel both qualify.
-  Opening `index.html` straight off disk (`file://`) may block the mic in some
-  browsers; if so, run `python3 -m http.server` and visit `localhost:8000`.
-- The Presentation Studio's **camera self-view is a mirror only** — there is no
-  automated eye-contact, posture or gesture scoring.
-- Voice analysis measures **loudness/energy and pace**, not pitch or tone.
-- Audience reactions refresh roughly every 14 seconds, driven by what you
-  actually said. Long talks make a steady trickle of small model calls — use a
-  cheap/fast model (`gemini-2.5-flash`, `qwen-flash`) for these.
+1. Commit `index.html`. Settings → Pages → pick the branch.
+2. Open the site → sliders icon → **Gemini** (or OpenRouter) → paste key →
+   proxy toggle **off** → **Test connection**.
+
+## Option B — Vercel (adds Groq + Anthropic)
+
+```
+your-project/
+├── index.html
+├── package.json      ← { "type": "module" }
+└── api/
+    └── chat.js
+```
+
+`package.json` must contain exactly:
+
+```json
+{ "type": "module" }
+```
+
+Without it Vercel treats `chat.js` as CommonJS, `export default` throws, and the
+function 500s. (Alternative: rename to `api/chat.mjs`.)
+
+1. Push to GitHub → vercel.com → Add New Project → import the repo.
+2. Framework preset **Other**. No build command. No env vars.
+3. Deploy, open the Vercel URL → Settings → **Groq** → paste key → the proxy
+   toggle switches on automatically → **Test connection**.
+
+Check `/api/chat` is live: visiting it in a browser should return
+`{"error":"Use POST..."}`. If you get a 404 or an HTML page, the function isn't
+deployed and the app will say so.
+
+> The relay only forwards to known model hosts (see `ALLOWED_HOSTS`), so a public
+> deployment can't be turned into an open proxy. It will still spend *your*
+> callers' keys, not yours — keys are never stored on the server.
+
+---
+
+## Picking a free model
+
+- **Groq · `llama-3.3-70b-versatile`** — best free quality/quota balance. Needs
+  the relay.
+- **Gemini · `gemini-2.5-flash-lite`** — the most generous Gemini free quota, and
+  works with no server at all.
+- Avoid the weakest OpenRouter `:free` models — they ignore JSON instructions and
+  produce flaky reports.
+
+Free tiers cap **requests per day**, and limits change — check your provider's
+dashboard. For long presentations set Settings → **Audience reaction pace** to
+*Frugal*.
+
+## Gotchas this app already handles
+
+1. **Gemini 2.5+ thinking tokens** are billed against `maxOutputTokens`. Left on,
+   the model burns the budget thinking and returns *empty text*. The app sends
+   `thinkingBudget: 0`.
+2. **Native JSON mode** (`response_format` / `responseMimeType`) is enabled for
+   every report and structured call — this is what makes reports reliable.
+3. **Reports never lose a session.** If the model returns malformed scores or
+   nothing at all, the app coerces what came back, fills gaps from your measured
+   pace/length/fillers, marks it **"Estimated locally,"** and still saves.
+
+## Question drill (record → Whisper → rewrites)
+
+After any interview or presentation, hit **Take questions**. Every question from
+the session lists on the left; each highlights in turn with a 3-second countdown,
+then records your voice. Hit **Stop & next** and that answer transcribes in the
+background while you answer the next one. At the end it waits for any stragglers,
+then the AI writes a stronger version of each answer **in your own words**.
+
+Transcription uses **Whisper Large v3** (the real open-source model) served free
+by Groq — 2,000 transcriptions/day, 25MB per clip. Settings → **Voice recording**:
+paste a Groq key (or leave blank if Groq is already your provider). It needs the
+relay deployed, because audio can't be posted to Groq from a browser.
+
+`whisper-large-v3-turbo` is the default (fastest); `whisper-large-v3` is the most
+accurate. Without a Groq key the drill falls back to typing.
+
+## Speaking
+
+- The in-session mic uses the browser recogniser (**Chrome / Edge** only, and
+  noticeably less accurate). The question drill uses Whisper instead.
+- Needs **HTTPS or localhost** — Pages and Vercel both qualify. Opening the file
+  from disk may block the mic; run `python3 -m http.server` and use
+  `localhost:8000`.
+- The presentation camera self-view is a **mirror only** — no eye-contact or
+  posture scoring.
 
 ## Data
 
-Everything (profile, scores, session history) lives in `localStorage` on your
-device. Clearing site data resets it. Nothing is uploaded.
+Profile, scores and history live in `localStorage` on your device. Nothing is
+uploaded.
