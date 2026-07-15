@@ -187,6 +187,24 @@
 
   .spin{animation:spin 1s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  /* question drill */
+  .drill{display:grid;grid-template-columns:280px 1fr;gap:18px;align-items:start}
+  @media(max-width:780px){.drill{grid-template-columns:1fr}}
+  .qrail{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;position:sticky;top:78px;max-height:calc(100vh - 110px);overflow-y:auto}
+  .qitem{display:flex;gap:10px;padding:10px 11px;border-radius:9px;border:1px solid transparent;margin-bottom:6px;cursor:default;transition:background .2s,border-color .2s}
+  .qitem.on{background:var(--panel3);border-color:var(--gold)}
+  .qitem.done{opacity:.72}
+  .qnum{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0;margin-top:2px;width:18px}
+  .qitem.on .qnum{color:var(--gold)}
+  .qtext{font-size:12.7px;line-height:1.4}
+  .qstate{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;margin-top:4px}
+  .bigq{font-family:var(--serif);font-size:22px;line-height:1.4;margin:0 0 4px}
+  .count{font-family:var(--mono);font-size:60px;color:var(--gold);line-height:1;text-align:center;padding:16px 0}
+  .reclamp{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12.5px;color:var(--rose)}
+  .recdot{width:9px;height:9px;border-radius:50%;background:var(--rose);animation:blink 1.1s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+  .lvl{height:5px;border-radius:5px;background:var(--lineSoft);overflow:hidden;margin-top:10px}
+  .lvlfill{height:100%;background:var(--rose);width:0%;transition:width .08s}
   .center{text-align:center}
   ::-webkit-scrollbar{width:9px} ::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px} ::-webkit-scrollbar-track{background:transparent}
   @media (max-width:640px){ .twocol{grid-template-columns:1fr !important} }
@@ -400,6 +418,359 @@ var OAI_PRESETS = [
   {name:'OpenAI', url:'https://api.openai.com/v1', model:'gpt-4o-mini'}
 ];
 
+/* ---- Whisper transcription (Groq, free tier) ---------------------------
+   The browser's built-in speech API is fast but inaccurate. Whisper Large v3
+   is the real open-source model; Groq serves it free (2,000 req/day, 25MB max).
+   Audio needs multipart/form-data, which the JSON relay can't carry — so we
+   send base64 and api/chat.js rebuilds the form server-side.              */
+function whisperKey(){
+  var st = S.settings;
+  return (st.whisperKey||'').trim() || (st.provider==='groq' ? (st.apiKey||'').trim() : '');
+}
+function canWhisper(){ return !!whisperKey(); }
+
+function blobToBase64(blob){
+  return new Promise(function(res, rej){
+    var r = new FileReader();
+    r.onload = function(){ res(String(r.result).split(',')[1]); };
+    r.onerror = function(){ rej(new Error('Could not read the recording.')); };
+    r.readAsDataURL(blob);
+  });
+}
+function transcribe(blob){
+  var key = whisperKey();
+  if (!key) return Promise.reject(new Error('Add a Groq key in Settings to use Whisper.'));
+  if (!blob || blob.size < 1200) return Promise.resolve('');
+  if (blob.size > 24*1024*1024) return Promise.reject(new Error('That recording is over the 25MB free-tier limit.'));
+  return blobToBase64(blob).then(function(b64){
+    return fetch(S.settings.proxyUrl || '/api/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        audio:b64, mime: blob.type || 'audio/webm', filename:'answer.webm',
+        url:'https://api.groq.com/openai/v1/audio/transcriptions',
+        headers:{ Authorization: 'Bearer ' + key },
+        model: S.settings.whisperModel || 'whisper-large-v3-turbo'
+      })
+    });
+  }).then(chk).then(function(d){
+    if (d && d.error) throw new Error(typeof d.error==='string' ? d.error : JSON.stringify(d.error).slice(0,160));
+    return ((d && d.text) || '').trim();
+  });
+}
+
+function makeRecorder(){
+  var mr = null, chunks = [], stream = null;
+  function pickMime(){
+    var opts = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
+    for (var i=0;i<opts.length;i++){
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(opts[i])) return opts[i];
+    }
+    return '';
+  }
+  return {
+    supported: function(){ return !!(window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia); },
+    start: function(){
+      return navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){
+        stream = s; chunks = [];
+        var m = pickMime();
+        mr = m ? new MediaRecorder(s, {mimeType:m}) : new MediaRecorder(s);
+        mr.ondataavailable = function(e){ if (e.data && e.data.size) chunks.push(e.data); };
+        mr.start(250);
+      });
+    },
+    stop: function(){
+      return new Promise(function(res){
+        if (!mr || mr.state === 'inactive'){ res(null); return; }
+        mr.onstop = function(){
+          var b = new Blob(chunks, {type: (mr && mr.mimeType) || 'audio/webm'});
+          try{ stream.getTracks().forEach(function(t){ t.stop(); }); }catch(e){}
+          mr = null; res(b);
+        };
+        try{ mr.stop(); }catch(e){ res(null); }
+      });
+    },
+    cancel: function(){
+      try{ mr && mr.state !== 'inactive' && mr.stop(); }catch(e){}
+      try{ stream && stream.getTracks().forEach(function(t){ t.stop(); }); }catch(e){}
+      mr = null;
+    }
+  };
+}
+
+/* ============================== Question Drill ==============================
+   Every question from the session, listed on the left. Press Take questions:
+   each highlights in turn, a 3-second countdown runs, your voice records.
+   Press Stop & next and the previous answer transcribes with Whisper IN THE
+   BACKGROUND while you answer the next one. At the end, the AI writes a
+   stronger version of each answer in your own words.                       */
+function viewDrill(){
+  var items = (S.drill && S.drill.items) || [];
+  var root = h('div',{style:'padding-top:30px'});
+  var rec = makeRecorder();
+  var idx = -1, phase = 'idle', countTimer = null, lvlRaf = null, actx = null, micStream = null;
+  var pending = 0;
+
+  onLeave(function(){
+    if (countTimer) clearInterval(countTimer);
+    if (lvlRaf) cancelAnimationFrame(lvlRaf);
+    try{ rec.cancel(); }catch(e){}
+    try{ actx && actx.close(); }catch(e){}
+    try{ micStream && micStream.getTracks().forEach(function(t){t.stop();}); }catch(e){}
+  });
+
+  root.appendChild(h('div',{cls:'row', style:'justify-content:space-between;align-items:flex-end;margin-bottom:18px'},[
+    h('div',{},[
+      eyebrow('Question drill','gold'),
+      h('h2',{cls:'title', style:'margin:12px 0 4px', text:'Answer them out loud'}),
+      h('p',{cls:'muted', style:'margin:0;font-size:14.5px;line-height:1.5;max-width:520px',
+        text:'Each question gets a 3-second countdown, then records. Stop when done — the previous answer transcribes in the background while you take the next.'})
+    ])
+  ]));
+
+  if (!items.length){
+    root.appendChild(h('div',{cls:'card pad center'},[
+      h('p',{cls:'muted', style:'margin:0 0 16px', text:'No questions captured in that session.'}),
+      btn('Back',{variant:'subtle', onclick:function(){ go('home'); }})
+    ]));
+    return root;
+  }
+
+  // ---- left rail
+  var rail = h('div',{cls:'qrail'});
+  var rows = [];
+  function drawRail(){
+    clear(rail);
+    rail.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:11px', text:items.length+' questions'}));
+    rows = items.map(function(it,i){
+      var state = h('div',{cls:'qstate'});
+      var row = h('div',{cls:'qitem'+(i===idx?' on':'')+(it.status==='done'?' done':'')},[
+        h('div',{cls:'qnum', text:String(i+1).padStart(2,'0')}),
+        h('div',{style:'min-width:0'},[ h('div',{cls:'qtext', text:it.q}), state ])
+      ]);
+      var label = {pending:'', recording:'recording', transcribing:'transcribing…', done:'answered', skipped:'skipped', failed:'transcription failed'}[it.status] || '';
+      state.textContent = label;
+      state.style.color = it.status==='done' ? 'var(--green)' : (it.status==='recording' ? 'var(--rose)' : (it.status==='failed' ? 'var(--rose)' : 'var(--faint)'));
+      rail.appendChild(row);
+      return row;
+    });
+  }
+
+  // ---- right stage
+  var stage = h('div',{cls:'card', style:'padding:24px'});
+  var qEl = h('div',{cls:'bigq'});
+  var midEl = h('div',{style:'min-height:120px;display:flex;flex-direction:column;justify-content:center'});
+  var ctrl = h('div',{cls:'row', style:'margin-top:18px'});
+  var noteEl = h('div',{cls:'faint', style:'font-size:12.5px;margin-top:12px;line-height:1.5'});
+  stage.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:10px'},''));
+  stage.appendChild(qEl); stage.appendChild(midEl); stage.appendChild(ctrl); stage.appendChild(noteEl);
+
+  root.appendChild(h('div',{cls:'drill'},[rail, stage]));
+  drawRail();
+
+  function setStage(){
+    clear(ctrl); clear(midEl);
+    if (phase === 'idle'){
+      qEl.textContent = 'Ready when you are.';
+      midEl.appendChild(h('p',{cls:'muted', style:'font-size:14px;line-height:1.55;margin:0',
+        text: canWhisper()
+          ? 'Whisper (open-source, via Groq) will transcribe your voice — far more accurate than the browser recogniser.'
+          : 'No Groq key found, so answers will be typed instead. Add one in Settings to record your voice with Whisper.' }));
+      ctrl.appendChild(btn('Take questions',{icon:'play', onclick:begin}));
+      ctrl.appendChild(btn('Skip to rewrites',{variant:'ghost', onclick:finish}));
+      return;
+    }
+    if (phase === 'count'){
+      qEl.textContent = items[idx].q;
+      var n = 3;
+      var c = h('div',{cls:'count', text:'3'});
+      midEl.appendChild(c);
+      midEl.appendChild(h('div',{cls:'center faint', style:'font-size:12.5px', text:'get ready…'}));
+      countTimer = setInterval(function(){
+        n--;
+        if (n <= 0){ clearInterval(countTimer); countTimer = null; startRec(); }
+        else c.textContent = String(n);
+      }, 1000);
+      return;
+    }
+    if (phase === 'rec'){
+      qEl.textContent = items[idx].q;
+      midEl.appendChild(h('div',{cls:'reclamp'},[h('span',{cls:'recdot'}), h('span',{text:'recording — speak your answer'})]));
+      var lf = h('div',{cls:'lvlfill'});
+      midEl.appendChild(h('div',{cls:'lvl'},[lf]));
+      meter(lf);
+      ctrl.appendChild(btn(idx >= items.length-1 ? 'Stop & finish' : 'Stop & next',{icon:'micOff', onclick:stopAndNext}));
+      ctrl.appendChild(btn('Skip',{variant:'quiet', onclick:function(){ items[idx].status='skipped'; rec.cancel(); next(); }}));
+      noteEl.textContent = pending ? pending+' answer(s) transcribing in the background…' : '';
+      return;
+    }
+    if (phase === 'type'){
+      qEl.textContent = items[idx].q;
+      var ta = h('textarea',{cls:'input', rows:4, placeholder:'Type what you would say…'});
+      midEl.appendChild(ta);
+      ctrl.appendChild(btn(idx >= items.length-1 ? 'Save & finish' : 'Save & next',{icon:'send', onclick:function(){
+        items[idx].text = ta.value.trim();
+        items[idx].status = items[idx].text ? 'done' : 'skipped';
+        next();
+      }}));
+      return;
+    }
+    if (phase === 'wait'){
+      qEl.textContent = 'Finishing transcription…';
+      midEl.appendChild(h('div',{cls:'center'},[
+        h('div',{html:icon('load',26,'var(--gold)','spin')}),
+        h('p',{cls:'faint', style:'font-size:13px;margin-top:12px', text: pending+' answer(s) still transcribing. This takes a few seconds.'})
+      ]));
+      return;
+    }
+  }
+
+  function meter(fill){
+    navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){
+      micStream = s;
+      var AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      actx = new AC();
+      var an = actx.createAnalyser(); an.fftSize = 256;
+      actx.createMediaStreamSource(s).connect(an);
+      var buf = new Uint8Array(an.fftSize);
+      (function loop(){
+        if (!actx || phase !== 'rec') return;
+        an.getByteTimeDomainData(buf);
+        var sum=0; for (var i=0;i<buf.length;i++){ var v=(buf[i]-128)/128; sum+=v*v; }
+        fill.style.width = Math.min(100, Math.sqrt(sum/buf.length)*280) + '%';
+        lvlRaf = requestAnimationFrame(loop);
+      })();
+    }).catch(function(){});
+  }
+
+  function begin(){ idx = 0; step(); }
+  function step(){
+    if (idx >= items.length){ finishWait(); return; }
+    phase = 'count'; drawRail(); setStage();
+    if (rows[idx] && rows[idx].scrollIntoView) rows[idx].scrollIntoView({block:'nearest'});
+  }
+  function startRec(){
+    if (!canWhisper() || !rec.supported()){ phase = 'type'; items[idx].status='recording'; drawRail(); setStage(); return; }
+    rec.start().then(function(){
+      phase = 'rec'; items[idx].status='recording'; drawRail(); setStage();
+    }).catch(function(){
+      noteEl.textContent = 'Microphone blocked — type your answer instead.';
+      phase = 'type'; setStage();
+    });
+  }
+  function stopAndNext(){
+    var myIdx = idx;
+    items[myIdx].status = 'transcribing'; pending++;
+    try{ actx && actx.close(); actx = null; }catch(e){}
+    try{ micStream && micStream.getTracks().forEach(function(t){t.stop();}); }catch(e){}
+    rec.stop().then(function(blob){
+      // fire-and-forget: transcribe while the user answers the next question
+      transcribe(blob).then(function(txt){
+        items[myIdx].text = txt; items[myIdx].status = txt ? 'done' : 'skipped';
+      }).catch(function(e){
+        items[myIdx].status = 'failed'; items[myIdx].error = e.message;
+      }).then(function(){
+        pending--; drawRail();
+        if (phase === 'wait' && pending === 0) finish();
+        else if (phase === 'wait') setStage();
+        else if (phase === 'rec') noteEl.textContent = pending ? pending+' answer(s) transcribing in the background…' : '';
+      });
+    });
+    next();
+  }
+  function next(){ idx++; if (idx >= items.length) finishWait(); else step(); }
+  function finishWait(){
+    phase = 'wait'; drawRail(); setStage();
+    if (pending === 0) finish();
+  }
+
+  function finish(){
+    phase = 'done';
+    var answered = items.filter(function(i){ return i.text; });
+    clear(root);
+    root.appendChild(loadingPane('Writing stronger answers in your voice…','Using your own words, structure and phrasing.'));
+    if (!answered.length){
+      clear(root);
+      root.appendChild(h('div',{cls:'card pad center'},[
+        h('p',{cls:'muted', style:'margin:0 0 16px', text:'No answers were captured, so there is nothing to rewrite.'}),
+        btn('Back to studio',{variant:'subtle', onclick:function(){ go('home'); }})
+      ]));
+      return;
+    }
+    callJSON({
+      system:'You are this person\'s private communication coach. For EACH question, write a stronger answer that still sounds unmistakably like THEM — same vocabulary, same rhythm, same personality. Never make it sound like polished AI copy. Keep their idioms and phrasing; add structure, specifics and confidence.\n'+
+        ((S.profile&&S.profile.voiceSummary)?('How they naturally talk: '+S.profile.voiceSummary+'\n'):'')+
+        'Context: '+(S.drill.context||'a workplace conversation')+'\n'+
+        'Return ONLY JSON: {"answers":[{"i":0,"kept":"what was already good, 1 sentence","fix":"the main thing to change, 1 sentence","better":"the improved answer in their own voice","why":"why the new version lands better, 1-2 sentences"}]}',
+      schema:'{"answers":[{"i":int,"kept":string,"fix":string,"better":string,"why":string}]}',
+      messages:[{role:'user', content: items.map(function(it,i){
+        return '['+i+'] Q: '+it.q+'\nTHEIR ANSWER: '+(it.text || '(no answer given)');
+      }).join('\n\n')}],
+      maxTokens:3000
+    }).then(function(d){
+      var map = {};
+      ((d && d.answers) || []).forEach(function(a){ map[a.i] = a; });
+      clear(root); renderRewrites(map);
+    }).catch(function(e){
+      clear(root); renderRewrites({}, e.message);
+    });
+  }
+
+  function renderRewrites(map, err){
+    root.appendChild(eyebrow('Question drill','gold'));
+    root.appendChild(h('h2',{cls:'title', text:'What you could have said'}));
+    root.appendChild(h('p',{cls:'muted', style:'font-size:14.5px;margin:0 0 22px;line-height:1.5',
+      text:'Your own answer, then a stronger version written in your voice — not a generic AI rewrite.'}));
+    if (err) root.appendChild(h('div',{cls:'warn', style:'margin-bottom:16px'},[h('span',{text:'Rewrites unavailable: '+err+' Your answers are saved below.'})]));
+
+    var list = h('div',{style:'display:flex;flex-direction:column;gap:14px'});
+    items.forEach(function(it,i){
+      var a = map[i];
+      var card = h('div',{cls:'card', style:'padding:18px 20px'});
+      card.appendChild(h('div',{style:'display:flex;gap:11px;align-items:flex-start'},[
+        h('span',{cls:'mono', style:'font-size:12px;color:var(--gold);margin-top:3px', text:String(i+1).padStart(2,'0')}),
+        h('div',{style:'font-family:var(--serif);font-size:16.5px;line-height:1.45', text:it.q})
+      ]));
+      if (it.text){
+        card.appendChild(h('div',{style:'margin-top:12px'},[
+          h('div',{cls:'mono', style:'font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:5px', text:'You said'}),
+          h('div',{style:'font-size:13.8px;line-height:1.55;color:var(--muted)', text:it.text})
+        ]));
+      } else {
+        card.appendChild(h('div',{cls:'faint', style:'margin-top:10px;font-size:13px',
+          text: it.status==='failed' ? ('Transcription failed: '+(it.error||'')) : 'No answer recorded.'}));
+      }
+      if (a){
+        if (a.kept || a.fix){
+          var g = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;gap:12px;margin-top:14px'});
+          if (a.kept) g.appendChild(h('div',{},[ h('div',{cls:'mono', style:'font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--teal);margin-bottom:5px', text:'Kept'}), h('div',{style:'font-size:13.3px;line-height:1.5', text:a.kept}) ]));
+          if (a.fix) g.appendChild(h('div',{},[ h('div',{cls:'mono', style:'font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);margin-bottom:5px', text:'Changed'}), h('div',{style:'font-size:13.3px;line-height:1.5', text:a.fix}) ]));
+          card.appendChild(g);
+        }
+        var rw = h('div',{cls:'rewrite', style:'margin-top:14px'});
+        rw.appendChild(h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:9px'},[
+          h('span',{html:icon('wand',15,'var(--gold)')}), eyebrow('Say this instead','gold') ]));
+        rw.appendChild(h('p',{style:'margin:0;font-size:14.5px;line-height:1.6;font-family:var(--serif)', text:a.better||''}));
+        if (a.why) rw.appendChild(h('p',{cls:'faint', style:'margin:11px 0 0;font-size:12.5px;line-height:1.5;border-top:1px solid var(--lineSoft);padding-top:9px', text:a.why}));
+        card.appendChild(rw);
+      }
+      list.appendChild(card);
+    });
+    root.appendChild(list);
+    root.appendChild(h('div',{cls:'row', style:'margin-top:28px'},[
+      btn('Drill again',{icon:'redo', onclick:function(){ items.forEach(function(i){ i.status='pending'; i.text=''; }); go('drill'); }}),
+      btn('Studio',{variant:'ghost', onclick:function(){ go('home'); }})
+    ]));
+  }
+
+  setStage();
+  return root;
+}
+
+function startDrill(questions, context){
+  S.drill = { context: context, items: questions.filter(Boolean).map(function(q){ return {q:q, text:'', status:'pending'}; }) };
+  go('drill');
+}
+
 function providerDef(id){ return PROVIDERS.filter(function(p){return p.id===id;})[0] || PROVIDERS[0]; }
 
 // Builds the exact provider request. `wantJSON` turns on native JSON mode where
@@ -541,7 +912,7 @@ function hasConn(){ return !!(S.settings.apiKey||'').trim(); }
 /* ------------------------------ state / router ------------------------------ */
 var S = {
   view:'home', profile:null, sessions:[], session:null, pres:null,
-  settings:{ provider:'gemini', apiKey:'', model:'gemini-2.5-flash-lite', baseUrl:'https://openrouter.ai/api/v1', proxyUrl:'/api/chat', useProxy:false, hearThem:false, reactSecs:30 }
+  settings:{ provider:'gemini', apiKey:'', model:'gemini-2.5-flash-lite', baseUrl:'https://openrouter.ai/api/v1', proxyUrl:'/api/chat', useProxy:false, hearThem:false, reactSecs:30, whisperKey:'', whisperModel:'whisper-large-v3-turbo' }
 };
 var cleanups = [];
 function onLeave(fn){ cleanups.push(fn); }
@@ -549,6 +920,16 @@ function runCleanups(){ cleanups.forEach(function(f){ try{f();}catch(e){} }); cl
 function saveSettings(){ store.set('room:settings', S.settings); }
 function saveProfile(p){ S.profile = p; store.set('room:profile', p); }
 function saveSessions(x){ S.sessions = x; store.set('room:sessions', x); }
+// Appends one session. Re-reads storage first so a second tab can't clobber it,
+// and guards against double-saving the same report.
+function persistSession(rec){
+  try{
+    var all = store.get('room:sessions', []) || [];
+    if (all.length && rec.date - all[all.length-1].date < 4000 && all[all.length-1].who === rec.who) return;
+    all.push(rec);
+    saveSessions(all.slice(-40));
+  }catch(e){ /* never let a save error break the report */ }
+}
 
 function go(view){ runCleanups(); S.view = view; render(); window.scrollTo(0,0); }
 
@@ -566,6 +947,7 @@ function render(){
   else if (v==='stage') wrap.appendChild(viewStage());
   else if (v==='presReport') wrap.appendChild(viewPresReport());
   else if (v==='progress') wrap.appendChild(viewProgress());
+  else if (v==='drill') wrap.appendChild(viewDrill());
   app.appendChild(wrap);
 }
 
@@ -697,6 +1079,23 @@ function openSettings(){
   oaiWrap.appendChild(h('div',{cls:'faint',style:'font-size:11.5px;margin-top:8px;line-height:1.5',
     text:'Browsers can only call providers that allow cross-origin requests. Gemini, Anthropic and OpenRouter work directly; OpenAI-direct and DashScope usually need the server proxy above.'}));
   sheet.appendChild(oaiWrap);
+
+  sheet.appendChild(h('div',{cls:'hr'}));
+  sheet.appendChild(eyebrow('Voice recording (Whisper)','gold'));
+  sheet.appendChild(h('div',{cls:'faint', style:'font-size:12.5px;line-height:1.5;margin:8px 0 10px',
+    text:'Whisper Large v3 is far more accurate than the browser recogniser. Groq runs it free (2,000 transcriptions/day). Needs the relay deployed. Leave blank to reuse your Groq key above.'}));
+  var wIn = h('input',{cls:'input', type:'password', value:st.whisperKey||'', placeholder:'gsk_...  (optional if provider is Groq)'});
+  wIn.addEventListener('input', function(){ st.whisperKey = wIn.value; });
+  sheet.appendChild(wIn);
+  var wRow = h('div',{cls:'row', style:'gap:6px;margin-top:8px'});
+  [['whisper-large-v3-turbo','Turbo · fastest'],['whisper-large-v3','Large v3 · most accurate']].forEach(function(o){
+    wRow.appendChild(h('button',{cls:'pill '+(st.whisperModel===o[0]?'on':''), onclick:function(){
+      st.whisperModel = o[0];
+      Array.prototype.forEach.call(wRow.children, function(c){ c.className='pill'; });
+      this.className='pill on';
+    }}, o[1]));
+  });
+  sheet.appendChild(wRow);
 
   sheet.appendChild(h('div',{cls:'hr'}));
   sheet.appendChild(eyebrow('Audience reaction pace','gold'));
@@ -1294,20 +1693,29 @@ function viewReport(){
       : 'Here is how that session came across.';
     if (!a.strengths || !a.strengths.length) a.strengths = ['You showed up and practised — that is the part most people skip.'];
     if (!a.improvements || !a.improvements.length) a.improvements = ['Add a concrete example with a number to your strongest answer.'];
-    clear(root); build(a);
+    // SAVE FIRST. Persistence must never depend on rendering succeeding —
+    // that was the bug: a throw inside build() skipped the save entirely.
+    var whoName = sess.mode==='interview'
+      ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
+      : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
+    persistSession({date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall, scores:a.scores});
     if (a.voiceSummary){
       saveProfile(Object.assign({}, S.profile||{}, {
         voiceSummary:a.voiceSummary, strengths:a.strengths, growthAreas:a.growthAreas,
         favouritePhrases:a.favouritePhrases, updatedAt:Date.now(), sessions:((S.profile&&S.profile.sessions)||0)+1
       }));
     }
-    var whoName = sess.mode==='interview'
+    S.lastReport = a;
+    clear(root);
+    try { build(a); }
+    catch(err){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Report saved, but could not draw: '+err.message})])); }
+  }).catch(function(e){
+    // Total failure (quota, key, network). Still SAVE and show the session.
+    var norm = normalizeScores(null, stats, SCORE_KEYS);
+    var whoName2 = sess.mode==='interview'
       ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
       : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
-    saveSessions((S.sessions||[]).concat([{date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall}]).slice(-40));
-  }).catch(function(e){
-    // Total failure (quota, key, network). Still show the session with local scores.
-    var norm = normalizeScores(null, stats, SCORE_KEYS);
+    persistSession({date:Date.now(), mode:sess.mode, who:whoName2, overall:norm.scores.overall, scores:norm.scores, estimated:true});
     clear(root);
     root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
       h('span',{text: (e && e.message) || 'The coach could not be reached, so scores below are estimated locally.'}),
@@ -1368,7 +1776,12 @@ function viewReport(){
     root.appendChild(list);
 
     root.appendChild(h('div',{cls:'row', style:'margin-top:34px'},[
-      btn('Practice again',{icon:'redo', onclick:function(){ go('setup'); }}),
+      btn('Take questions',{icon:'mic', onclick:function(){
+        var qs = sess.transcript.filter(function(t){ return t.by==='them' && ['question','followup','challenge'].indexOf(t.kind)>=0; })
+                                .map(function(t){ return t.text; });
+        startDrill(qs, sess.mode==='interview' ? 'a job interview' : 'a workplace conversation');
+      }}),
+      btn('Practice again',{variant:'ghost', icon:'redo', onclick:function(){ go('setup'); }}),
       btn('See progress',{variant:'ghost', icon:'trend', onclick:function(){ go('progress'); }})
     ]));
   }
@@ -1887,10 +2300,14 @@ function viewPresReport(){
     if (!a.strongest) a.strongest = 'You rehearsed the whole thing out loud — that alone builds fluency.';
     if (!a.weakest) a.weakest = 'Tighten the opening so the first 20 seconds state your point.';
     if (!a.suggestions || !a.suggestions.length) a.suggestions = ['Open with your conclusion.','Pause instead of using filler words.','Watch your pace in the middle third.'];
-    clear(root); build(a);
-    saveSessions((S.sessions||[]).concat([{date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:a.scores.overall}]).slice(-40));
+    persistSession({date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:a.scores.overall, scores:a.scores});
+    S.lastReport = a;
+    clear(root);
+    try { build(a); }
+    catch(err){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Report saved, but could not draw: '+err.message})])); }
   }).catch(function(e){
     var norm = normalizeScores(null, pstats, PKEYS);
+    persistSession({date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:norm.scores.overall, scores:norm.scores, estimated:true});
     clear(root);
     root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
       h('span',{text:(e && e.message) || 'The coach could not be reached, so scores below are estimated locally.'}),
@@ -1953,7 +2370,11 @@ function viewPresReport(){
       root.appendChild(qs);
     }
     root.appendChild(h('div',{cls:'row', style:'margin-top:30px'},[
-      btn('Present again',{icon:'redo', onclick:function(){ go('pres'); }}),
+      btn('Take questions',{icon:'mic', onclick:function(){
+        var qs = (p.qa||[]).map(function(q){ return q.q; });
+        startDrill(qs, 'audience Q&A after a talk about: '+String(p.content||'').slice(0,200));
+      }}),
+      btn('Present again',{variant:'ghost', icon:'redo', onclick:function(){ go('pres'); }}),
       btn('See progress',{variant:'ghost', icon:'trend', onclick:function(){ go('progress'); }})
     ]));
   }
