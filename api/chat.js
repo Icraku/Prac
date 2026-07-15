@@ -23,6 +23,9 @@ const ALLOWED_HOSTS = [
   "dashscope-intl.aliyuncs.com",
 ];
 
+// Vercel's default JSON body limit is 1MB — base64 audio is far bigger, so raise it.
+export const config = { api: { bodyParser: { sizeLimit: "30mb" } }, maxDuration: 60 };
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", process.env.ALLOW_ORIGIN || "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -37,7 +40,48 @@ export default async function handler(req, res) {
   if (typeof payload === "string") {
     try { payload = JSON.parse(payload); } catch { payload = null; }
   }
-  if (!payload || !payload.url || !payload.body) {
+  if (!payload) {
+    return res.status(400).json({ error: "Expected a JSON body." });
+  }
+
+  // ---- Audio path: Whisper transcription --------------------------------
+  // Transcription needs multipart/form-data, which can't ride inside JSON.
+  // The client sends base64; we rebuild the form here and post it upstream.
+  if (payload.audio) {
+    let host2;
+    try { host2 = new URL(payload.url).hostname; }
+    catch { return res.status(400).json({ error: "Malformed audio url" }); }
+    if (!ALLOWED_HOSTS.some((h) => host2 === h || host2.endsWith("." + h))) {
+      return res.status(403).json({ error: "Host not allowed: " + host2 });
+    }
+    try {
+      const bytes = Buffer.from(payload.audio, "base64");
+      if (bytes.length > 25 * 1024 * 1024) {
+        return res.status(413).json({ error: "Audio over 25MB (Groq free-tier limit)." });
+      }
+      const form = new FormData();
+      form.append("file", new Blob([bytes], { type: payload.mime || "audio/webm" }), payload.filename || "audio.webm");
+      form.append("model", payload.model || "whisper-large-v3-turbo");
+      form.append("response_format", "json");
+      if (payload.language) form.append("language", payload.language);
+      if (payload.prompt) form.append("prompt", payload.prompt);
+
+      const up = await fetch(payload.url, {
+        method: "POST",
+        // Only the auth header — fetch must set its own multipart boundary.
+        headers: { Authorization: (payload.headers && payload.headers.Authorization) || "" },
+        body: form,
+      });
+      const t = await up.text();
+      res.status(up.status);
+      try { return res.json(JSON.parse(t)); }
+      catch { return res.json({ error: "Transcription returned non-JSON (" + up.status + "): " + t.slice(0, 200) }); }
+    } catch (err) {
+      return res.status(502).json({ error: "Transcription relay failed: " + String(err.message || err).slice(0, 200) });
+    }
+  }
+
+  if (!payload.url || !payload.body) {
     return res.status(400).json({
       error: "Expected JSON { url, headers, body }. Got: " + JSON.stringify(payload || {}).slice(0, 160),
     });
