@@ -132,7 +132,17 @@ accurate. Without a Groq key the drill falls back to typing.
 - The presentation camera self-view is a **mirror only** — no eye-contact or
   posture scoring.
 
+## Progress archive
+
+Every finished report is stored in full — scores, summary, transcript, Q&A. In
+**Progress & profile**, click any past session to reopen its complete report.
+Rewrites you generate are cached back into the record, so reopening is free.
+
+Full reports are big, so if `localStorage` fills up the app strips the heavy
+payload off the *oldest* sessions first (they stay in the trend chart, marked
+"report cleared for space") rather than dropping the new one.
+
 ## Data
 
-Profile, scores and history live in `localStorage` on your device. Nothing is
-uploaded.
+Profile, scores, reports and history live in `localStorage` on your device.
+Nothing is uploaded.
