@@ -187,6 +187,21 @@
 
   .spin{animation:spin 1s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  /* live question rail (room + stage) */
+  .roomgrid{display:grid;grid-template-columns:1fr 250px;gap:18px;align-items:start}
+  @media(max-width:860px){.roomgrid{grid-template-columns:1fr}.qrail2{position:static !important;max-height:none !important}}
+  .qrail2{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;position:sticky;top:78px;max-height:calc(100vh - 110px);overflow-y:auto}
+  .qlog{display:flex;gap:9px;padding:9px 4px;border-bottom:1px solid var(--lineSoft)}
+  .qlog:last-child{border-bottom:none}
+  .qlog .n{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-shrink:0;margin-top:2px;width:16px}
+  .qlog .t{font-size:12.3px;line-height:1.4;color:var(--muted)}
+  .diff{display:inline-block;font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;
+    border-radius:20px;padding:2px 7px;margin-top:5px;border:1px solid}
+  .diff.easy{color:var(--green);border-color:rgba(132,194,155,.4)}
+  .diff.medium{color:var(--gold);border-color:var(--goldDim)}
+  .diff.hard{color:var(--rose);border-color:rgba(217,138,126,.45)}
+  .archrow{cursor:pointer;border-radius:9px;padding:10px 8px;transition:background .15s}
+  .archrow:hover{background:var(--panel2)}
   /* question drill */
   .drill{display:grid;grid-template-columns:280px 1fr;gap:18px;align-items:start}
   @media(max-width:780px){.drill{grid-template-columns:1fr}}
@@ -771,6 +786,95 @@ function startDrill(questions, context){
   go('drill');
 }
 
+/* Reusable expandable answer card with "say this instead" coaching.
+   Caches results into `store` so re-opening an archived report is free.  */
+function coachCard(o){
+  var card = h('div',{cls:'acard'});
+  var open = false;
+  var chev = h('span',{html:icon('chev',17,'var(--faint)'), style:'flex-shrink:0;margin-top:2px;transition:transform .2s'});
+  var ansEl = h('div',{cls:'clamp', style:'font-size:14px;line-height:1.5', text:o.answer || '(no answer given)'});
+  var qLine = h('div',{cls:'muted', style:'font-size:13.5px;margin-bottom:6px;line-height:1.4', text:o.question});
+  var head = h('button',{cls:'ahead'},[
+    h('span',{cls:'mono', style:'font-size:12px;color:var(--gold);margin-top:2px', text:String(o.idx+1).padStart(2,'0')}),
+    h('div',{style:'flex:1;min-width:0'},[
+      qLine,
+      o.difficulty ? h('span',{cls:'diff '+o.difficulty, style:'margin-bottom:7px', text:o.difficulty}) : null,
+      ansEl
+    ]), chev
+  ]);
+  var body = h('div',{cls:'abody'}); body.style.display='none';
+
+  head.addEventListener('click', function(){
+    open = !open;
+    body.style.display = open ? 'block' : 'none';
+    chev.style.transform = open ? 'rotate(180deg)' : 'none';
+    ansEl.className = open ? '' : 'clamp';
+    if (open && !body.dataset.loaded) run();
+  });
+
+  function run(){
+    var cached = o.store && o.store[o.key];
+    if (cached){ body.dataset.loaded='1'; draw(cached); return; }
+    if (!o.answer){ body.dataset.loaded='1'; clear(body);
+      body.appendChild(h('div',{cls:'faint', style:'font-size:13px', text:'No answer was recorded for this one.'})); return; }
+    clear(body);
+    body.appendChild(h('div',{cls:'faint', style:'display:flex;align-items:center;gap:9px;font-size:13.5px',
+      html: icon('load',15,'currentColor','spin')+'<span style="margin-left:4px">Writing a version in your voice…</span>'}));
+    callJSON({
+      system:"You are this person's private communication coach. Help them say what THEY would say - with more structure, confidence and evidence - WITHOUT changing their personality, vocabulary or voice. It must still sound unmistakably like them, never polished AI copy.\n"+
+        ((S.profile&&S.profile.voiceSummary)?('How they naturally talk: '+S.profile.voiceSummary+'\n'):'')+
+        'Setting: '+(o.context||'a workplace conversation')+'\n'+
+        'Return ONLY JSON:\n{"worked":"1 sentence","improve":"1 sentence","why":"1 sentence","improved":"their answer rewritten in their own voice","whyBetter":"1-2 sentences"}',
+      messages:[{role:'user', content:'QUESTION: '+o.question+'\n\nTHEIR ANSWER: '+o.answer}],
+      maxTokens:900
+    }).then(function(d){
+      if(!d || !d.improved) throw new Error('The model did not return a rewrite. Try again, or switch model in Settings.');
+      body.dataset.loaded='1';
+      if (o.store){ o.store[o.key] = d; if (S.replay) persistCoach(S.replay, o.key, d); }
+      draw(d);
+    }).catch(function(e){
+      clear(body);
+      body.appendChild(h('div',{style:'color:var(--rose);font-size:13.5px;line-height:1.5'},[
+        h('span',{text:(e && e.message) ? e.message+' ' : 'Could not coach this one. '}),
+        h('button',{style:'background:none;border:none;color:var(--gold);cursor:pointer', text:'Retry', onclick:run})
+      ]));
+    });
+  }
+  function draw(d){
+    clear(body);
+    var g = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;gap:12px'});
+    g.appendChild(mini('Worked', d.worked, 'teal'));
+    g.appendChild(mini('To improve', d.improve, 'gold'));
+    body.appendChild(g);
+    if (d.why) body.appendChild(h('div',{cls:'muted', style:'font-size:13.5px;line-height:1.5;margin-top:14px'},[
+      h('span',{cls:'faint', text:'Why it matters — '}), h('span',{text:d.why}) ]));
+    var rw = h('div',{cls:'rewrite', style:'margin-top:14px'});
+    rw.appendChild(h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:10px'},[
+      h('span',{html:icon('wand',15,'var(--gold)')}), eyebrow('In your voice, more prepared','gold') ]));
+    rw.appendChild(h('p',{style:'margin:0;font-size:14.5px;line-height:1.6;font-family:var(--serif)', text:d.improved}));
+    if (d.whyBetter) rw.appendChild(h('p',{cls:'faint', style:'margin:12px 0 0;font-size:12.5px;line-height:1.5;border-top:1px solid var(--lineSoft);padding-top:10px', text:d.whyBetter}));
+    body.appendChild(rw);
+  }
+  function mini(label, text, color){
+    return h('div',{},[
+      h('div',{cls:'mono', style:'font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--'+color+');margin-bottom:5px', text:label}),
+      h('div',{style:'font-size:13.5px;line-height:1.5', text:text||''})
+    ]);
+  }
+  card.appendChild(head); card.appendChild(body);
+  return card;
+}
+// Write a generated rewrite back into the stored session so it's free next time.
+function persistCoach(rec, key, data){
+  try{
+    var all = store.get('room:sessions', []) || [];
+    for (var i=0;i<all.length;i++){
+      if (all[i].id === rec.id){ all[i].coach = all[i].coach || {}; all[i].coach[key] = data; break; }
+    }
+    localStorage.setItem('room:sessions', JSON.stringify(all)); S.sessions = all;
+  }catch(e){ /* cache is a bonus, never fatal */ }
+}
+
 function providerDef(id){ return PROVIDERS.filter(function(p){return p.id===id;})[0] || PROVIDERS[0]; }
 
 // Builds the exact provider request. `wantJSON` turns on native JSON mode where
@@ -926,12 +1030,36 @@ function persistSession(rec){
   try{
     var all = store.get('room:sessions', []) || [];
     if (all.length && rec.date - all[all.length-1].date < 4000 && all[all.length-1].who === rec.who) return;
+    rec.id = 's'+rec.date;
     all.push(rec);
-    saveSessions(all.slice(-40));
+    all = all.slice(-40);
+    // Full reports carry transcripts, so they're big. If localStorage rejects the
+    // write, strip the heavy payload off the oldest entries (keeping their scores)
+    // until it fits, rather than losing the new report.
+    for (var attempt=0; attempt<40; attempt++){
+      try{ localStorage.setItem('room:sessions', JSON.stringify(all)); S.sessions = all; return; }
+      catch(err){
+        var stripped = false;
+        for (var i=0;i<all.length;i++){
+          if (all[i].report || all[i].transcript || all[i].pres){
+            delete all[i].report; delete all[i].transcript; delete all[i].pres; delete all[i].coach;
+            all[i].trimmed = true; stripped = true; break;
+          }
+        }
+        if (!stripped) { all = all.slice(1); }
+      }
+    }
   }catch(e){ /* never let a save error break the report */ }
 }
 
-function go(view){ runCleanups(); S.view = view; render(); window.scrollTo(0,0); }
+function go(view){ runCleanups(); if (view!=='report' && view!=='presReport') S.replay = null; S.view = view; render(); window.scrollTo(0,0); }
+// Re-open a saved report from Progress.
+function openArchived(rec){
+  if (!rec.report){ return; }
+  S.replay = rec;
+  runCleanups(); S.view = (rec.mode==='presentation') ? 'presReport' : 'report';
+  render(); window.scrollTo(0,0);
+}
 
 function render(){
   var app = document.getElementById('app');
@@ -1352,7 +1480,7 @@ function buildSystem(sess, docCtx, closing){
       '- Move naturally across: motivation, real experience, a specific project, a challenge or failure, teamwork, and role-specific depth.\n'+
       (closing?'- This is the FINAL moment. Wrap up warmly, thank them, say you will be in touch. kind must be "closing".\n':'')+
       '\nOutput ONLY a JSON object, no other text:\n'+
-      '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing]}';
+      '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing], "difficulty": one of [easy,medium,hard] - how demanding this question is to answer well}';
   }
   var s = SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0];
   return 'You are '+s.counterpart+'. '+s.persona+'\n\n'+
@@ -1363,7 +1491,7 @@ function buildSystem(sess, docCtx, closing){
     "- Push back, ask clarifying questions, or show emotion when it fits. Don't make it easy if the moment calls for friction.\n"+
     (closing?'- Wrap the conversation up naturally now. kind must be "closing".\n':'')+
     '\nOutput ONLY a JSON object, no other text:\n'+
-    '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing]}';
+    '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing], "difficulty": one of [easy,medium,hard] - how demanding this question is to answer well}';
 }
 
 function viewRoom(){
@@ -1402,8 +1530,26 @@ function viewRoom(){
     btn('End',{variant:'quiet', onclick:function(){ finish(); }})
   ]));
 
+  // live question rail — every question asked, tagged by difficulty
+  var qrail = h('div',{cls:'qrail2'});
+  function drawQRail(){
+    clear(qrail);
+    var qs = transcript.filter(function(t){ return t.by==='them' && ['question','followup','challenge'].indexOf(t.kind)>=0; });
+    qrail.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:10px', text:'Questions asked'}));
+    if (!qs.length){ qrail.appendChild(h('div',{cls:'faint', style:'font-size:12px', text:'They will appear here as they come.'})); return; }
+    qs.forEach(function(t,i){
+      var d = t.difficulty || 'medium';
+      qrail.appendChild(h('div',{cls:'qlog'},[
+        h('div',{cls:'n', text:String(i+1).padStart(2,'0')}),
+        h('div',{style:'min-width:0'},[ h('div',{cls:'t', text:t.text}), h('span',{cls:'diff '+d, text:d}) ])
+      ]));
+    });
+    qrail.scrollTop = qrail.scrollHeight;
+  }
+
+  var col = h('div');
   var log = h('div',{cls:'log'});
-  root.appendChild(log);
+  col.appendChild(log);
 
   var thinkEl = h('div',{cls:'thinking'},[
     h('span',{cls:'mono', style:'font-size:12px', text:who.name.split(' ')[0]}),
@@ -1430,7 +1576,9 @@ function viewRoom(){
       timerEl
     ])
   ]);
-  root.appendChild(composer);
+  col.appendChild(composer);
+  root.appendChild(h('div',{cls:'roomgrid'},[col, qrail]));
+  drawQRail();
 
   function updTimer(){
     timerEl.querySelector('span').textContent = mmss(seconds)+' · '+words(ta.value)+' words';
@@ -1510,12 +1658,14 @@ function viewRoom(){
       // If the model gave prose instead of JSON, use the prose as speech rather than a canned line.
       if (typeof t === 'string') t = { speech:t, mood:'neutral', kind:'question' };
       if (!t.speech) throw new Error('The model returned no reply. Try another model in Settings.');
-      var entry = {by:'them', text:t.speech, mood:t.mood||'neutral', action:t.action||'', kind:t.kind||'question'};
+      var entry = {by:'them', text:t.speech, mood:t.mood||'neutral', action:t.action||'', kind:t.kind||'question',
+        difficulty: ['easy','medium','hard'].indexOf(t.difficulty)>=0 ? t.difficulty : 'medium'};
       transcript.push(entry);
       setThinking(false);
       moodTxt.textContent = moodOf(entry.mood).l.toLowerCase();
       moodDot.style.background = moodOf(entry.mood).c;
       addBubble(entry);
+      drawQRail();
       if (entry.kind !== 'silence' && S.settings.hearThem){
         ring.className='ring speak';
         var u = speak(entry.text, who.id);
@@ -1641,7 +1791,12 @@ function normalizeScores(a, stats, keys){
 }
 
 function viewReport(){
-  var sess = S.session;
+  // If S.replay is set we are re-opening a saved report from Progress:
+  // rebuild the context from storage and skip the API call entirely.
+  var replay = S.replay;
+  var sess = replay
+    ? Object.assign({transcript:replay.transcript||[]}, replay.sessionRef||{mode:replay.mode})
+    : S.session;
   var root = h('div',{cls:'mid', style:'padding-top:34px'});
   var pane = loadingPane('Reading the room back...','Scoring your delivery and learning your voice.');
   root.appendChild(pane);
@@ -1657,6 +1812,7 @@ function viewReport(){
   var text = sess.transcript.map(function(t){ return (t.by==='me'?'CANDIDATE':'INTERVIEWER')+': '+t.text; }).join('\n\n');
   var stats = { answers:mine.length, avgWords:avgW, avgSec:avgS, fillers:totF, totalWords:totW };
   var SCORE_KEYS = ['overall','confidence','clarity','storytelling','executivePresence','technical','leadership','listening'];
+  var liveCoach = {};
 
   // Nothing was said — there is nothing to score. Say so plainly.
   if (!mine.length){
@@ -1674,7 +1830,7 @@ function viewReport(){
   }
 
   // ONE call does scoring AND voice-profile learning (was two — halves free-tier usage).
-  callJSON({
+  (replay ? Promise.resolve(replay.report) : callJSON({
     system:'You are an elite communication coach reviewing a practice '+kind+'. Be specific, honest and encouraging.\n'+
       'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
       '{"scores":{"overall":75,"confidence":70,"clarity":80,"storytelling":65,"executivePresence":70,"technical":72,"leadership":68,"listening":74},'+
@@ -1683,7 +1839,7 @@ function viewReport(){
     schema:'{"scores":{"overall":int,"confidence":int,"clarity":int,"storytelling":int,"executivePresence":int,"technical":int,"leadership":int,"listening":int},"strengths":[3 strings],"improvements":[3 strings],"summary":string,"voiceSummary":string,"growthAreas":[3 strings],"favouritePhrases":[strings]}',
     messages:[{role:'user', content:'TRANSCRIPT:\n'+text+'\n\nMEASURED: '+mine.length+' answers, avg '+avgW+' words, avg '+avgS+'s each, '+totF+' filler words.'}],
     maxTokens:1600
-  }).then(function(a){
+  })).then(function(a){
     a = a || {};
     var norm = normalizeScores(a, stats, SCORE_KEYS);
     a.scores = norm.scores;
@@ -1693,12 +1849,21 @@ function viewReport(){
       : 'Here is how that session came across.';
     if (!a.strengths || !a.strengths.length) a.strengths = ['You showed up and practised — that is the part most people skip.'];
     if (!a.improvements || !a.improvements.length) a.improvements = ['Add a concrete example with a number to your strongest answer.'];
+    if (replay){
+      a = a || {};
+      a.scores = normalizeScores(a, stats, SCORE_KEYS).scores;
+      clear(root);
+      try { build(a); } catch(err){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Could not draw: '+err.message})])); }
+      return;
+    }
     // SAVE FIRST. Persistence must never depend on rendering succeeding —
     // that was the bug: a throw inside build() skipped the save entirely.
     var whoName = sess.mode==='interview'
       ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
       : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
-    persistSession({date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall, scores:a.scores});
+    persistSession({date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall, scores:a.scores,
+      report:a, transcript:sess.transcript, stats:stats, coach:{},
+      sessionRef:{mode:sess.mode, interviewerId:sess.interviewerId, scenarioId:sess.scenarioId}});
     if (a.voiceSummary){
       saveProfile(Object.assign({}, S.profile||{}, {
         voiceSummary:a.voiceSummary, strengths:a.strengths, growthAreas:a.growthAreas,
@@ -1715,7 +1880,10 @@ function viewReport(){
     var whoName2 = sess.mode==='interview'
       ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
       : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
-    persistSession({date:Date.now(), mode:sess.mode, who:whoName2, overall:norm.scores.overall, scores:norm.scores, estimated:true});
+    persistSession({date:Date.now(), mode:sess.mode, who:whoName2, overall:norm.scores.overall, scores:norm.scores, estimated:true,
+      report:{scores:norm.scores, estimated:true, summary:'Estimated locally.', strengths:[], improvements:[]},
+      transcript:sess.transcript, stats:stats, coach:{},
+      sessionRef:{mode:sess.mode, interviewerId:sess.interviewerId, scenarioId:sess.scenarioId}});
     clear(root);
     root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
       h('span',{text: (e && e.message) || 'The coach could not be reached, so scores below are estimated locally.'}),
@@ -1768,10 +1936,15 @@ function viewReport(){
     root.appendChild(h('h3',{cls:'sub', text:'Answer by answer'}));
     root.appendChild(h('p',{cls:'faint', style:'font-size:13.5px;margin:0 0 18px', text:'Open any answer for a version that sounds like you — with more structure and confidence.'}));
     var list = h('div',{style:'display:flex;flex-direction:column;gap:12px'});
+    var coachStore = (replay && replay.coach) || liveCoach;
     mine.forEach(function(x, idx){
       var prev = null;
       for (var i=x.i-1;i>=0;i--){ if (sess.transcript[i].by==='them'){ prev = sess.transcript[i]; break; } }
-      list.appendChild(answerCard(idx, prev?prev.text:'Opening', x.t));
+      list.appendChild(coachCard({
+        idx:idx, question: prev?prev.text:'Opening', answer:x.t.text,
+        difficulty: prev && prev.difficulty, key:'a'+idx, store:coachStore,
+        context: sess.mode==='interview' ? 'a job interview' : 'a workplace conversation'
+      }));
     });
     root.appendChild(list);
 
@@ -1786,73 +1959,7 @@ function viewReport(){
     ]));
   }
 
-  function answerCard(idx, question, t){
-    var card = h('div',{cls:'acard'});
-    var open = false, loaded = false;
-    var chev = h('span',{html:icon('chev',17,'var(--faint)'), style:'flex-shrink:0;margin-top:2px;transition:transform .2s'});
-    var meta = h('div',{cls:'mono faint', style:'margin-top:7px;font-size:11px;display:flex;gap:12px'},[
-      h('span',{text:(t.words||0)+' words'}),
-      t.seconds ? h('span',{text:t.seconds+'s'}) : null,
-      (t.fillers&&t.fillers.n) ? h('span',{style:'color:var(--rose)', text:t.fillers.n+' fillers'}) : null
-    ]);
-    var ansEl = h('div',{cls:'clamp', style:'font-size:14px;line-height:1.5', text:t.text});
-    var head = h('button',{cls:'ahead'},[
-      h('span',{cls:'mono', style:'font-size:12px;color:var(--gold);margin-top:2px', text:String(idx+1).padStart(2,'0')}),
-      h('div',{style:'flex:1;min-width:0'},[
-        h('div',{cls:'muted', style:'font-size:13.5px;margin-bottom:6px;line-height:1.4', text:question}),
-        ansEl, meta
-      ]), chev
-    ]);
-    var body = h('div',{cls:'abody'}); body.style.display='none';
-    head.addEventListener('click', function(){
-      open = !open;
-      body.style.display = open ? 'block' : 'none';
-      chev.style.transform = open ? 'rotate(180deg)' : 'none';
-      ansEl.className = open ? '' : 'clamp';
-      if (open && !loaded){ loaded = true; coach(); }
-    });
-    function coach(){
-      clear(body);
-      body.appendChild(h('div',{cls:'faint', style:'display:flex;align-items:center;gap:9px;font-size:13.5px',
-        html: icon('load',15,'currentColor','spin')+'<span style="margin-left:4px">Writing a version in your voice...</span>'}));
-      callJSON({
-        system:"You are this person's private communication coach. Help them say what THEY would say - with more structure, confidence and evidence - WITHOUT changing their personality, vocabulary or voice. The rewrite must still sound unmistakably like them, not a polished AI answer.\n"+
-          ((S.profile&&S.profile.voiceSummary)?('How they naturally talk: '+S.profile.voiceSummary+'\n'):'')+
-          'Return ONLY JSON:\n{"worked":"1 sentence","improve":"1 sentence","why":"1 sentence","improved":"their answer rewritten in their own voice","whyBetter":"1-2 sentences"}',
-        messages:[{role:'user', content:'QUESTION: '+question+'\n\nTHEIR ANSWER: '+t.text}],
-        maxTokens:900
-      }).then(function(d){
-        if(!d || !d.improved) throw new Error('The model did not return a rewrite. Try again, or switch model in Settings.');
-        clear(body);
-        var g = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;gap:12px'});
-        g.appendChild(mini('Worked', d.worked, 'teal'));
-        g.appendChild(mini('To improve', d.improve, 'gold'));
-        body.appendChild(g);
-        if (d.why) body.appendChild(h('div',{cls:'muted', style:'font-size:13.5px;line-height:1.5;margin-top:14px'},[
-          h('span',{cls:'faint', text:'Why it matters — '}), h('span',{text:d.why}) ]));
-        var rw = h('div',{cls:'rewrite', style:'margin-top:14px'});
-        rw.appendChild(h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:10px'},[
-          h('span',{html:icon('wand',15,'var(--gold)')}), eyebrow('In your voice, more prepared','gold') ]));
-        rw.appendChild(h('p',{style:'margin:0;font-size:14.5px;line-height:1.6;font-family:var(--serif)', text:d.improved}));
-        if (d.whyBetter) rw.appendChild(h('p',{cls:'faint', style:'margin:12px 0 0;font-size:12.5px;line-height:1.5;border-top:1px solid var(--lineSoft);padding-top:10px', text:d.whyBetter}));
-        body.appendChild(rw);
-      }).catch(function(e){
-        clear(body);
-        body.appendChild(h('div',{style:'color:var(--rose);font-size:13.5px;line-height:1.5'},[
-          h('span',{text:(e && e.message && e.message !== 'bad') ? e.message+' ' : 'Could not coach this one. '}),
-          h('button',{style:'background:none;border:none;color:var(--gold);cursor:pointer', text:'Retry', onclick:coach})
-        ]));
-      });
-    }
-    function mini(label, text, color){
-      return h('div',{},[
-        h('div',{cls:'mono', style:'font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--'+color+');margin-bottom:5px', text:label}),
-        h('div',{style:'font-size:13.5px;line-height:1.5', text:text})
-      ]);
-    }
-    card.appendChild(head); card.appendChild(body);
-    return card;
-  }
+
   return root;
 }
 
@@ -2178,11 +2285,29 @@ function viewStage(){
   function startQA(){
     stopRun(); phase='qa';
     clear(stageArea);
+    var curDiff = 'medium';
     var qBox = h('div',{cls:'card', style:'padding:18px 20px'});
     var qEyebrow = eyebrow('Questions · 1 of 3','gold');
+    var qDiff = h('span',{cls:'diff medium', style:'margin-left:10px', text:'medium'});
     var qText = h('p',{style:'margin:10px 0 0;font-size:16px;line-height:1.5;font-family:var(--serif)'});
-    qBox.appendChild(qEyebrow); qBox.appendChild(qText);
-    stageArea.appendChild(qBox);
+    qBox.appendChild(h('div',{style:'display:flex;align-items:center'},[qEyebrow, qDiff]));
+    qBox.appendChild(qText);
+    // rail of questions asked so far, tagged by difficulty
+    var qaRail = h('div',{cls:'qrail2'});
+    function drawQARail(){
+      clear(qaRail);
+      qaRail.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:10px', text:'Questions asked'}));
+      if (!qaList.length) qaRail.appendChild(h('div',{cls:'faint', style:'font-size:12px', text:'They will appear here as they come.'}));
+      qaList.forEach(function(q,i){
+        var d = q.difficulty || 'medium';
+        qaRail.appendChild(h('div',{cls:'qlog'},[
+          h('div',{cls:'n', text:String(i+1).padStart(2,'0')}),
+          h('div',{style:'min-width:0'},[ h('div',{cls:'t', text:q.q}), h('span',{cls:'diff '+d, text:d}) ])
+        ]));
+      });
+    }
+    var qaCol = h('div');
+    qaCol.appendChild(qBox);
 
     var ans = h('textarea',{cls:'input', rows:3, placeholder:'Speak or type your answer...'});
     var mic = h('button',{cls:'sq', html:icon('mic',16)});
@@ -2192,8 +2317,10 @@ function viewStage(){
     var box = h('div',{cls:'composer', style:'border:none;padding-top:14px'},[
       h('div',{cls:'rel'},[ans, h('div',{cls:'actions'},[mic,snd])])
     ]);
-    stageArea.appendChild(box);
-    stageArea.appendChild(h('div',{style:'margin-top:16px'},[ btn('End & get report',{variant:'ghost', onclick:function(){ finish(); }}) ]));
+    qaCol.appendChild(box);
+    qaCol.appendChild(h('div',{style:'margin-top:16px'},[ btn('End & get report',{variant:'ghost', onclick:function(){ finish(); }}) ]));
+    stageArea.appendChild(h('div',{cls:'roomgrid'},[qaCol, qaRail]));
+    drawQARail();
 
     var listening=false;
     var d2 = makeDictation(function(t){ ans.value=t; snd.disabled=!t.trim(); }, function(){ listening=false; mic.className='sq'; mic.innerHTML=icon('mic',16); });
@@ -2215,12 +2342,14 @@ function viewStage(){
       Object.keys(tiles).forEach(function(k){ tiles[k].face.style.borderColor = audMood(audience.filter(function(m){return m.id===k;})[0].mood).c; });
       if (tiles[asker.id]) tiles[asker.id].face.style.borderColor = 'var(--gold)';
       callJSON({
-        system:'You are '+asker.name+', '+asker.role+', in the audience after a talk. Ask ONE realistic, specific question about what was said - curious or challenging. Return ONLY JSON: {"question": string}.',
+        system:'You are '+asker.name+', '+asker.role+', in the audience after a talk. Ask ONE realistic, specific question about what was said - curious or challenging. Return ONLY JSON: {"question": string, "difficulty": one of [easy,medium,hard]}.',
         messages:[{role:'user', content:'TALK:\n'+fullText().slice(0,2200)+(qaList.length?('\n\nAlready asked: '+qaList.map(function(q){return q.q;}).join(' | ')):'')}],
         maxTokens:500
       }).then(function(d){
-        if (!d || !d.question) d = {question:'Can you say more about your main point?'};
+        if (!d || !d.question) d = {question:'Can you say more about your main point?', difficulty:'easy'};
+        curDiff = ['easy','medium','hard'].indexOf(d.difficulty)>=0 ? d.difficulty : 'medium';
         if (loading.parentNode) qBox.removeChild(loading);
+        qDiff.className = 'diff '+curDiff; qDiff.textContent = curDiff;
         qText.textContent = ''; qText.appendChild(h('span',{style:'color:var(--gold)', text:asker.name+': '}));
         qText.appendChild(h('span',{text:'"'+d.question+'"'}));
         qText.dataset.q = d.question;
@@ -2233,7 +2362,8 @@ function viewStage(){
     function submit(){
       if (!ans.value.trim()) return;
       try{d2&&d2.stop();}catch(e){}
-      qaList.push({ by:asker?asker.name:'Audience', q:qText.dataset.q||'', a:ans.value.trim() });
+      qaList.push({ by:asker?asker.name:'Audience', q:qText.dataset.q||'', a:ans.value.trim(), difficulty:curDiff });
+      drawQARail();
       ans.value=''; snd.disabled=true;
       if (qaList.length>=3) finish(); else ask();
     }
@@ -2263,11 +2393,13 @@ function viewStage(){
 
 /* ------------------------------ presentation: report ------------------------------ */
 function viewPresReport(){
-  var p = S.pres;
+  var replay = S.replay;
+  var p = replay ? (replay.pres||{}) : S.pres;
   var root = h('div',{cls:'mid', style:'padding-top:34px'});
   root.appendChild(loadingPane('Reading the room back...','Scoring your delivery.'));
 
   var PKEYS = ['overall','clarity','structure','pacing','engagement','confidence','vocalEnergy'];
+  var presCoach = {};
   var pstats = { answers:1, avgWords:words(p.transcript||''), avgSec:p.durationSec||0,
     fillers:(p.fillers&&p.fillers.n)||0, totalWords:words(p.transcript||'') };
 
@@ -2282,7 +2414,7 @@ function viewPresReport(){
     return root;
   }
 
-  callJSON({
+  (replay ? Promise.resolve(replay.report) : callJSON({
     system:'You are an elite presentation coach. Review a rehearsed talk honestly and specifically.\n'+
       'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
       '{"scores":{"overall":72,"clarity":75,"structure":68,"pacing":70,"engagement":74,"confidence":71,"vocalEnergy":66},'+
@@ -2292,7 +2424,7 @@ function viewPresReport(){
       '\n\nMEASURED: '+(Math.round(p.durationSec/60*10)/10)+' min spoken, target '+p.mins+' min, '+p.wpm+' wpm, '+
       (p.fillers.n||0)+' fillers, '+p.overtimeWords+' words over time, avg audience engagement '+p.avgEngagement+'%.'}],
     maxTokens:1400
-  }).then(function(a){
+  })).then(function(a){
     a = a || {};
     var norm = normalizeScores(a, pstats, PKEYS);
     a.scores = norm.scores; a.estimated = norm.estimated;
@@ -2300,14 +2432,26 @@ function viewPresReport(){
     if (!a.strongest) a.strongest = 'You rehearsed the whole thing out loud — that alone builds fluency.';
     if (!a.weakest) a.weakest = 'Tighten the opening so the first 20 seconds state your point.';
     if (!a.suggestions || !a.suggestions.length) a.suggestions = ['Open with your conclusion.','Pause instead of using filler words.','Watch your pace in the middle third.'];
-    persistSession({date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:a.scores.overall, scores:a.scores});
+    if (replay){
+      clear(root);
+      try { build(a); } catch(err){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Could not draw: '+err.message})])); }
+      return;
+    }
+    persistSession({date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:a.scores.overall, scores:a.scores,
+      report:a, pres:{audName:p.audName, mins:p.mins, durationSec:p.durationSec, wpm:p.wpm, fillers:p.fillers,
+        overtimeWords:p.overtimeWords, engSamples:p.engSamples, avgEngagement:p.avgEngagement, qa:p.qa, transcript:p.transcript},
+      coach:{}});
     S.lastReport = a;
     clear(root);
     try { build(a); }
     catch(err){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Report saved, but could not draw: '+err.message})])); }
   }).catch(function(e){
     var norm = normalizeScores(null, pstats, PKEYS);
-    persistSession({date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:norm.scores.overall, scores:norm.scores, estimated:true});
+    persistSession({date:Date.now(), mode:'presentation', who:p.audName||'Presentation', overall:norm.scores.overall, scores:norm.scores, estimated:true,
+      report:{scores:norm.scores, estimated:true, summary:'Estimated locally.', suggestions:[]},
+      pres:{audName:p.audName, mins:p.mins, durationSec:p.durationSec, wpm:p.wpm, fillers:p.fillers,
+        overtimeWords:p.overtimeWords, engSamples:p.engSamples, avgEngagement:p.avgEngagement, qa:p.qa, transcript:p.transcript},
+      coach:{}});
     clear(root);
     root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
       h('span',{text:(e && e.message) || 'The coach could not be reached, so scores below are estimated locally.'}),
@@ -2360,12 +2504,15 @@ function viewPresReport(){
 
     if (p.qa && p.qa.length){
       root.appendChild(h('h3',{cls:'sub', text:'Your Q&A'}));
-      var qs = h('div',{style:'display:flex;flex-direction:column;gap:10px'});
-      p.qa.forEach(function(q){
-        qs.appendChild(h('div',{cls:'card', style:'padding:14px 16px'},[
-          h('div',{style:'font-size:13.5px;color:var(--gold);margin-bottom:6px', text:q.by+': "'+q.q+'"'}),
-          h('div',{style:'font-size:14px;line-height:1.5', text:q.a})
-        ]));
+      root.appendChild(h('p',{cls:'faint', style:'font-size:13.5px;margin:0 0 14px',
+        text:'Open any answer for a stronger version in your own voice.'}));
+      var qs = h('div',{style:'display:flex;flex-direction:column;gap:12px'});
+      p.qa.forEach(function(q,i){
+        qs.appendChild(coachCard({
+          idx:i, question:(q.by?q.by+': ':'')+'"'+q.q+'"', answer:q.a, difficulty:q.difficulty,
+          key:'qa'+i, store:(S.replay && S.replay.coach) || presCoach,
+          context:'an audience question after a talk'
+        }));
       });
       root.appendChild(qs);
     }
@@ -2442,16 +2589,27 @@ function viewProgress(){
     ]));
     sc.appendChild(h('div',{html:sparkSVG(trend)}));
     var list = h('div',{style:'margin-top:22px;display:flex;flex-direction:column'});
+    list.appendChild(h('div',{cls:'faint', style:'font-size:12px;margin-bottom:6px', text:'Click a session to reopen its full report.'}));
     S.sessions.slice().reverse().forEach(function(s,i){
       var color = s.mode==='interview' ? 'var(--gold)' : (s.mode==='presentation' ? 'var(--green)' : 'var(--teal)');
-      var row = h('div',{style:'display:flex;align-items:center;justify-content:space-between;padding:10px 0'+(i?';border-top:1px solid var(--lineSoft)':'')},[
+      var openable = !!s.report;
+      var row = h('div',{cls: openable ? 'archrow' : '', title: openable ? 'Open this report' : 'Report not stored for this session',
+        style:'display:flex;align-items:center;justify-content:space-between'+(i?';border-top:1px solid var(--lineSoft)':'')},[
         h('div',{style:'display:flex;align-items:center;gap:12px;min-width:0'},[
           h('span',{style:'width:8px;height:8px;border-radius:50%;background:'+color+';flex-shrink:0'}),
-          h('span',{style:'font-size:14px', text:s.who||s.mode}),
-          h('span',{cls:'mono faint', style:'font-size:12px', text:new Date(s.date).toLocaleDateString(undefined,{month:'short',day:'numeric'})})
+          h('div',{style:'min-width:0'},[
+            h('div',{style:'font-size:14px', text:s.who||s.mode}),
+            h('div',{cls:'mono faint', style:'font-size:11px;margin-top:2px',
+              text: new Date(s.date).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
+                    + (s.estimated?' · estimated':'') + (s.trimmed?' · report cleared for space':'')})
+          ])
         ]),
-        h('span',{cls:'mono', style:'font-size:15px;color:var(--gold)', text:String(s.overall)})
+        h('div',{style:'display:flex;align-items:center;gap:10px;flex-shrink:0'},[
+          h('span',{cls:'mono', style:'font-size:15px;color:var(--gold)', text:String(s.overall)}),
+          openable ? h('span',{cls:'faint', style:'display:flex;transform:rotate(-90deg)', html:icon('chev',15)}) : null
+        ])
       ]);
+      if (openable) row.addEventListener('click', function(){ openArchived(s); });
       list.appendChild(row);
     });
     sc.appendChild(list); root.appendChild(sc);
