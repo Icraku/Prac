@@ -132,7 +132,7 @@ accurate. Without a Groq key the drill falls back to typing.
 - The presentation camera self-view is a **mirror only** — no eye-contact or
   posture scoring.
 
-## Case study (EY SAT)
+## Case study
 
 A fourth module: **Case study**. Pick firm → service line → team → level, choose
 one of 10 cases, set your timings, and take it.
@@ -147,16 +147,6 @@ one of 10 cases, set your timings, and take it.
   recommendation, clarity and presence; the angles you missed; and your whole
   presentation rewritten **in your own voice, better ordered**. Saved to Progress
   and reopenable like any other report.
-
-Only **EY → Strategy and Transactions** is enabled (Parthenon, VME, Transaction
-Diligence, Corporate Finance, TSE, TRS, Infrastructure). The other firms and
-service lines are visible but greyed out.
-
-The 10 cases are set against real FY2026 conditions — AI-driven power demand and
-the utility deal wave, the carve-out surge, the PE exit backlog, private credit's
-first cycle test, the pharma patent cliff, tariffs and inflation, European defence,
-Japanese outbound M&A, and infrastructure rotation. **The companies are fictional**;
-the market context is real.
 
 ## Your own question banks
 
