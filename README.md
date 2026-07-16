@@ -132,6 +132,54 @@ accurate. Without a Groq key the drill falls back to typing.
 - The presentation camera self-view is a **mirror only** — no eye-contact or
   posture scoring.
 
+## Case study (EY SAT)
+
+A fourth module: **Case study**. Pick firm → service line → team → level, choose
+one of 10 cases, set your timings, and take it.
+
+- **Read** the case against a countdown (3/5/10/15 min or untimed) with the data
+  exhibit pinned beside it.
+- **Present** out loud. The browser recogniser drives the live transcript while
+  MediaRecorder feeds **Whisper** for the accurate final one.
+- **Panel Q&A** — questions are generated from *what you actually said*, tagged
+  easy/medium/hard, 2–5 of them.
+- **Debrief** — scored on structure, commercial judgement, use of the data,
+  recommendation, clarity and presence; the angles you missed; and your whole
+  presentation rewritten **in your own voice, better ordered**. Saved to Progress
+  and reopenable like any other report.
+
+Only **EY → Strategy and Transactions** is enabled (Parthenon, VME, Transaction
+Diligence, Corporate Finance, TSE, TRS, Infrastructure). The other firms and
+service lines are visible but greyed out.
+
+The 10 cases are set against real FY2026 conditions — AI-driven power demand and
+the utility deal wave, the carve-out surge, the PE exit backlog, private credit's
+first cycle test, the pharma patent cliff, tariffs and inflation, European defence,
+Japanese outbound M&A, and infrastructure rotation. **The companies are fictional**;
+the market context is real.
+
+## Your own question banks
+
+Setup → **Your question banks**. Drop in `.docx`, `.txt`, `.md` or `.csv` (PDF
+isn't supported offline — paste the text). They're parsed into individual
+questions, stored in this browser, and reused in every future interview.
+Numbering (`1.` `2)` `Q4:` `-` `•`) is stripped; short lines ending in `:`
+become section headings.
+
+Choose the blend with **How much to use them**: ignore / mostly tailored /
+balanced / mostly bank / bank only.
+
+How it works, and why it's cheap: your questions are ranked against your CV and
+the JD **locally** by keyword overlap (no API call), the best ~45 are shortlisted,
+then **one** planning call weaves the chosen number of bank questions with fresh
+CV-tailored ones and orders them easiest-first. During the interview the rail
+tags each question **my bank** / **follow-up**, so you can see the blend live.
+The interviewer still improvises follow-ups off your answers.
+
+You can also drop a `questions.json` next to `index.html`
+(`{"name":"HR Bank","questions":["...","..."]}`) and it auto-loads — same-origin,
+so it isn't a CDN request.
+
 ## Progress archive
 
 Every finished report is stored in full — scores, summary, transcript, Q&A. In
