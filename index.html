@@ -200,6 +200,13 @@
   .diff.easy{color:var(--green);border-color:rgba(132,194,155,.4)}
   .diff.medium{color:var(--gold);border-color:var(--goldDim)}
   .diff.hard{color:var(--rose);border-color:rgba(217,138,126,.45)}
+  .src{display:inline-block;font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;
+    border-radius:20px;padding:2px 7px;border:1px solid var(--line);color:var(--teal);border-color:rgba(111,180,166,.4)}
+  .src.fu{color:var(--faint);border-color:var(--line)}
+  .bankrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:11px;margin-bottom:8px}
+  .drop{border:1.5px dashed var(--line);border-radius:12px;padding:18px;text-align:center;transition:border-color .15s,background .15s}
+  .drop.hot{border-color:var(--gold);background:rgba(224,167,94,.06)}
   .archrow{cursor:pointer;border-radius:9px;padding:10px 8px;transition:background .15s}
   .archrow:hover{background:var(--panel2)}
   /* question drill */
@@ -875,6 +882,1111 @@ function persistCoach(rec, key, data){
   }catch(e){ /* cache is a bonus, never fatal */ }
 }
 
+/* ============================== Question banks ==============================
+   Import your own interview question banks once; they live in this browser and
+   get mixed with CV-tailored questions on every future interview.
+   Matching is done LOCALLY (keyword overlap) so shortlisting costs no quota —
+   only the final plan is a single API call.                                 */
+var STOP = ('a an the and or but if of to in on for with about as at by from is are was were be been being do does did '+
+  'you your yours i me my we our they them he she it this that these those how what when where why who which can could '+
+  'would should will shall may might must have has had not no yes so than then there here all any some more most other '+
+  'into over under again further once during before after above below up down out off then too very just also each').split(' ');
+var STOPSET = {}; STOP.forEach(function(w){ STOPSET[w]=1; });
+
+// Match on a 5-character prefix rather than trying to stem properly.
+// "migration"/"migrated" -> "migra"; "prioritise"/"prioritised"/"prioritisation"
+// -> "prior"; "stakeholder"/"stakeholders" -> "stake". Occasionally over-matches
+// ("communicate"/"community"), which is harmless for ranking.
+function key(w){ return w.length > 5 ? w.slice(0,5) : w; }
+function tokens(s){
+  return String(s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/)
+    .filter(function(w){ return w.length>2 && !STOPSET[w]; })
+    .map(key);
+}
+
+// Turns a pasted/uploaded document into individual questions, keeping any
+// section headings it finds as categories.
+function parseBank(text){
+  var lines = String(text||'').split(/\r?\n/);
+  var out = [], cat = '';
+  lines.forEach(function(raw){
+    var l = raw.trim();
+    if (!l) return;
+    // strip list numbering: "12.", "3)", "-", "•", "Q7:"
+    var stripped = l.replace(/^\s*(?:[Qq]\s*\d+\s*[:.)-]|\d+\s*[.):-]|[-•*·»]\s*)\s*/, '').trim();
+    if (!stripped) return;
+    var isQ = /\?\s*$/.test(stripped);
+    var wordCount = stripped.split(/\s+/).length;
+    // Heading heuristic: short, no question mark, ends with ':' or is titlecase/caps
+    if (!isQ && wordCount <= 8 && (/:$/.test(stripped) || stripped === stripped.toUpperCase() || /^(volume|section|part|chapter)\b/i.test(stripped))){
+      cat = stripped.replace(/:$/,'').trim();
+      return;
+    }
+    // Keep anything question-shaped, or an imperative prompt ("Tell me about...")
+    if (isQ || /^(tell|describe|explain|walk|give|share|talk|what|how|why|when|where|which|who|can|could|would|have|do|did|is|are)\b/i.test(stripped)){
+      if (wordCount >= 3) out.push({ q: stripped, cat: cat });
+    }
+  });
+  // de-duplicate
+  var seen = {}, uniq = [];
+  out.forEach(function(o){
+    var k = o.q.toLowerCase().replace(/\s+/g,' ');
+    if (!seen[k]){ seen[k]=1; uniq.push(o); }
+  });
+  return uniq;
+}
+
+// Minimal .docx reader: a docx is a ZIP; pull word/document.xml and inflate it
+// with the browser's built-in DecompressionStream. No library, no CDN.
+function docxToText(file){
+  return file.arrayBuffer().then(function(ab){
+    var buf = new Uint8Array(ab), dv = new DataView(ab);
+    var eocd = -1;
+    for (var i = buf.length - 22; i >= 0 && i > buf.length - 65558; i--){
+      if (buf[i]===0x50 && buf[i+1]===0x4b && buf[i+2]===0x05 && buf[i+3]===0x06){ eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('That does not look like a .docx file.');
+    var count = dv.getUint16(eocd+10, true), off = dv.getUint32(eocd+16, true), target = null;
+    for (var n=0; n<count; n++){
+      var method = dv.getUint16(off+10, true);
+      var compSize = dv.getUint32(off+20, true);
+      var nameLen = dv.getUint16(off+28, true);
+      var extraLen = dv.getUint16(off+30, true);
+      var commentLen = dv.getUint16(off+32, true);
+      var localOff = dv.getUint32(off+42, true);
+      var name = new TextDecoder().decode(buf.subarray(off+46, off+46+nameLen));
+      if (name === 'word/document.xml'){ target = {method:method, compSize:compSize, localOff:localOff}; break; }
+      off += 46 + nameLen + extraLen + commentLen;
+    }
+    if (!target) throw new Error('No document.xml inside that .docx.');
+    var lh = target.localOff;
+    var dataStart = lh + 30 + dv.getUint16(lh+26, true) + dv.getUint16(lh+28, true);
+    var data = buf.subarray(dataStart, dataStart + target.compSize);
+    if (target.method === 0) return new TextDecoder().decode(data);
+    if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unzip .docx — paste the text instead.');
+    var ds = new DecompressionStream('deflate-raw');
+    return new Response(new Blob([data]).stream().pipeThrough(ds)).arrayBuffer()
+      .then(function(x){ return new TextDecoder().decode(new Uint8Array(x)); });
+  }).then(function(xml){
+    return xml.replace(/<\/w:p>/g, '\n')
+      .replace(/<w:tab[^>]*\/>/g, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+      .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&apos;/g,"'");
+  });
+}
+
+function readFileAsText(file){
+  return new Promise(function(res, rej){
+    var r = new FileReader();
+    r.onload = function(){ res(String(r.result)); };
+    r.onerror = function(){ rej(new Error('Could not read that file.')); };
+    r.readAsText(file);
+  });
+}
+function importBankFile(file){
+  var n = (file.name||'').toLowerCase();
+  if (/\.docx$/.test(n)) return docxToText(file);
+  if (/\.pdf$/.test(n)) return Promise.reject(new Error('PDF needs a parser this app cannot load offline — open it and paste the text instead.'));
+  if (/\.(txt|md|csv|tsv|json|rtf)$/.test(n) || file.type.indexOf('text') === 0) return readFileAsText(file);
+  return readFileAsText(file); // optimistic: many banks are plain text with odd extensions
+}
+
+function allBankQuestions(){
+  var out = [];
+  (S.banks||[]).forEach(function(b){
+    if (b.enabled === false) return;
+    b.questions.forEach(function(q){ out.push({ q:q.q, cat:q.cat, bank:b.name }); });
+  });
+  return out;
+}
+
+// Rank bank questions against the CV + JD by keyword overlap. Free and instant.
+function shortlistBank(cv, jd, limit){
+  var pool = allBankQuestions();
+  if (!pool.length) return [];
+  var ctx = {}, ctxToks = tokens(cv + ' ' + jd);
+  ctxToks.forEach(function(w){ ctx[w] = (ctx[w]||0) + 1; });
+  var scored = pool.map(function(item){
+    var t = tokens(item.q + ' ' + (item.cat||''));
+    var score = 0, hits = 0;
+    t.forEach(function(w){ if (ctx[w]){ score += 1 + Math.min(ctx[w], 4) * 0.25; hits++; } });
+    // normalise so long questions don't win by length alone
+    var norm = t.length ? score / Math.sqrt(t.length) : 0;
+    return { q:item.q, cat:item.cat, bank:item.bank, score:norm, hits:hits };
+  });
+  scored.sort(function(a,b){ return b.score - a.score; });
+  // keep some low-scoring ones so the bank isn't reduced to CV echoes
+  var top = scored.slice(0, Math.round(limit * 0.75));
+  var rest = scored.slice(Math.round(limit * 0.75));
+  for (var i = rest.length - 1; i > 0; i--){ var j = Math.floor(Math.random()*(i+1)); var t2 = rest[i]; rest[i] = rest[j]; rest[j] = t2; }
+  return top.concat(rest.slice(0, limit - top.length));
+}
+
+var MIX = [
+  {id:'off',   label:'Ignore banks',      bank:0},
+  {id:'light', label:'Mostly tailored',   bank:0.25},
+  {id:'even',  label:'Balanced',          bank:0.5},
+  {id:'heavy', label:'Mostly my bank',    bank:0.75},
+  {id:'only',  label:'My bank only',      bank:1}
+];
+
+// One call: weave shortlisted bank questions with CV-tailored ones into a plan.
+function buildPlan(sess, docCtx){
+  var mixDef = MIX.filter(function(m){ return m.id === (sess.mix||'even'); })[0] || MIX[2];
+  if (mixDef.bank === 0) return Promise.resolve(null);
+  var short = shortlistBank(sess.cv, sess.jd, 45);
+  if (!short.length) return Promise.resolve(null);
+  var want = sess.plannedTurns || 8;
+  var nBank = Math.round(want * mixDef.bank);
+  return callJSON({
+    system:'You plan a job interview. You are given a candidate brief and a numbered bank of the interviewer\'s own questions.\n'+
+      'Build an ordered plan of exactly '+want+' questions:\n'+
+      '- Use EXACTLY '+nBank+' questions taken from the bank. Pick the ones most relevant to this candidate and role. Quote them near-verbatim; you may lightly adapt wording to name their actual experience.\n'+
+      '- The remaining '+(want-nBank)+' must be NEW questions tailored to the CV and job description.\n'+
+      '- Order them so difficulty rises: warm-up first, hardest near the end.\n'+
+      '- Do not repeat topics.\n'+
+      'Return ONLY JSON: {"plan":[{"q":"the question text","source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard"}]}',
+    schema:'{"plan":[{"q":string,"source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard"}]}',
+    messages:[{ role:'user', content:
+      'CANDIDATE BRIEF:\n'+docCtx+'\n\nQUESTION BANK (choose from these):\n'+
+      short.map(function(x,i){ return (i+1)+'. '+(x.cat?'['+x.cat+'] ':'')+x.q; }).join('\n') }],
+    maxTokens:2200
+  }).then(function(d){
+    var plan = (d && d.plan) || [];
+    return plan.length ? plan : null;
+  }).catch(function(){ return null; }); // bank is an enhancement — never block the interview
+}
+
+/* Import / manage your own question banks, and choose how heavily they're used. */
+function bankCard(st){
+  var card = h('div');
+  card.appendChild(eyebrow('Your question banks'));
+  card.appendChild(h('div',{cls:'faint', style:'font-size:12.5px;margin:4px 0 10px;line-height:1.5',
+    text:'Import your own interview questions once — they stay in this browser and get mixed into every future interview. .docx, .txt, .md and .csv work; for PDF, paste the text.'}));
+
+  var list = h('div');
+  var status = h('div',{cls:'faint', style:'font-size:12px;margin-top:8px;line-height:1.5'});
+
+  function total(){ return (S.banks||[]).reduce(function(a,b){ return a + (b.enabled===false?0:b.questions.length); }, 0); }
+  function drawList(){
+    clear(list);
+    if (!(S.banks||[]).length){ return; }
+    S.banks.forEach(function(b, i){
+      var tog = h('button',{cls:'toggle '+(b.enabled===false?'':'on'), role:'switch', style:'transform:scale(.8)'},[h('span',{cls:'knob'})]);
+      tog.addEventListener('click', function(){
+        b.enabled = (b.enabled === false);
+        tog.className = 'toggle '+(b.enabled===false?'':'on'); saveBanks(); drawCount();
+      });
+      list.appendChild(h('div',{cls:'bankrow'},[
+        h('div',{style:'min-width:0'},[
+          h('div',{style:'font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis', text:b.name}),
+          h('div',{cls:'mono faint', style:'font-size:10.5px;margin-top:2px', text:b.questions.length+' questions'+(b.src?' · auto-loaded':'')})
+        ]),
+        h('div',{style:'display:flex;align-items:center;gap:8px;flex-shrink:0'},[ tog,
+          h('button',{style:'background:none;border:none;color:var(--faint);cursor:pointer;display:flex', title:'Remove',
+            html:icon('x',15), onclick:function(){
+              S.banks.splice(i,1); saveBanks(); drawList(); drawCount();
+            }})
+        ])
+      ]));
+    });
+  }
+  function drawCount(){
+    var n = total();
+    status.textContent = n ? n+' questions available across '+(S.banks.filter(function(b){return b.enabled!==false;}).length)+' bank(s).'
+                           : 'No banks loaded — interviews will use CV-tailored questions only.';
+    mixWrap.style.display = n ? 'block' : 'none';
+  }
+
+  // ---- import: file picker + drag/drop + paste
+  var fileIn = h('input',{type:'file', accept:'.docx,.txt,.md,.csv,.tsv,.json,.rtf', multiple:'', style:'display:none'});
+  function handleFiles(files){
+    var arr = Array.prototype.slice.call(files||[]);
+    if (!arr.length) return;
+    status.style.color = 'var(--faint)';
+    status.textContent = 'Reading '+arr.length+' file(s)…';
+    Promise.all(arr.map(function(f){
+      return importBankFile(f).then(function(txt){
+        var qs = parseBank(txt);
+        if (!qs.length) throw new Error('No questions found in '+f.name+' — are they on separate lines?');
+        return { name:f.name.replace(/\.[^.]+$/,''), questions:qs, enabled:true, added:Date.now() };
+      });
+    })).then(function(banks){
+      banks.forEach(function(b){ S.banks.push(b); });
+      saveBanks(); drawList(); drawCount();
+      status.style.color = 'var(--green)';
+      status.textContent = 'Imported '+banks.reduce(function(a,b){return a+b.questions.length;},0)+' questions from '+banks.length+' file(s).';
+    }).catch(function(e){
+      status.style.color = 'var(--rose)';
+      status.textContent = e.message;
+    });
+  }
+  fileIn.addEventListener('change', function(){ handleFiles(fileIn.files); fileIn.value=''; });
+
+  var drop = h('div',{cls:'drop'},[
+    h('div',{style:'font-size:13.5px;margin-bottom:8px', text:'Drop your question bank files here'}),
+    h('div',{cls:'row', style:'justify-content:center;gap:8px'},[
+      btn('Choose files',{variant:'subtle', onclick:function(){ fileIn.click(); }}),
+      btn('Paste instead',{variant:'ghost', onclick:function(){ pasteWrap.style.display = pasteWrap.style.display==='none' ? 'block' : 'none'; }})
+    ])
+  ]);
+  ['dragenter','dragover'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('hot'); }); });
+  ['dragleave','drop'].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('hot'); }); });
+  drop.addEventListener('drop', function(e){ handleFiles(e.dataTransfer.files); });
+  card.appendChild(drop);
+  card.appendChild(fileIn);
+
+  var pasteWrap = h('div',{style:'display:none;margin-top:12px'});
+  var pasteName = h('input',{cls:'input', placeholder:'Bank name (e.g. HR Bank — Volume 1)'});
+  var pasteTa = h('textarea',{cls:'input', rows:5, style:'margin-top:8px', placeholder:'One question per line. Numbering and bullets are stripped automatically. Short lines ending in ":" become section headings.'});
+  pasteWrap.appendChild(pasteName); pasteWrap.appendChild(pasteTa);
+  pasteWrap.appendChild(h('div',{cls:'row', style:'margin-top:8px'},[
+    btn('Add bank',{variant:'subtle', icon:'check', onclick:function(){
+      var qs = parseBank(pasteTa.value);
+      if (!qs.length){ status.style.color='var(--rose)'; status.textContent='No questions found — put one per line.'; return; }
+      S.banks.push({ name: pasteName.value.trim() || ('Pasted bank '+(S.banks.length+1)), questions:qs, enabled:true, added:Date.now() });
+      saveBanks(); drawList(); drawCount();
+      pasteTa.value=''; pasteName.value=''; pasteWrap.style.display='none';
+      status.style.color='var(--green)'; status.textContent='Added '+qs.length+' questions.';
+    }})
+  ]));
+  card.appendChild(pasteWrap);
+  card.appendChild(h('div',{style:'margin-top:12px'},[list]));
+  card.appendChild(status);
+
+  // ---- mix control
+  var mixWrap = h('div',{style:'margin-top:16px'});
+  mixWrap.appendChild(h('div',{cls:'mono faint', style:'font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px', text:'How much to use them'}));
+  var mixRow = h('div',{cls:'row', style:'gap:6px'});
+  MIX.forEach(function(m){
+    mixRow.appendChild(h('button',{cls:'pill '+(st.mix===m.id?'on':''), onclick:function(){
+      st.mix = m.id; store.set('room:mix', m.id);
+      Array.prototype.forEach.call(mixRow.children, function(c){ c.className='pill'; });
+      this.className='pill on';
+    }}, m.label));
+  });
+  mixWrap.appendChild(mixRow);
+  mixWrap.appendChild(h('div',{cls:'faint', style:'font-size:11.5px;margin-top:8px;line-height:1.5',
+    text:'Your questions are matched to your CV locally (no API cost), then one planning call weaves them with tailored ones and orders them easiest-first.'}));
+  card.appendChild(mixWrap);
+
+  drawList(); drawCount();
+  return card;
+}
+
+/* ============================== Case Study =================================
+   Big-4 style case interviews. Cases are written against real FY2026 market
+   conditions (AI-driven power demand, the carve-out wave, the PE exit backlog,
+   private credit's first cycle test) so the commercial context is current.
+   They are illustrative scenarios — the companies are fictional.          */
+var CASE_FIRMS = [
+  {id:'ey', name:'EY', on:true, lines:[
+    {id:'sat', name:'Strategy and Transactions', on:true, teams:[
+      {id:'parthenon', name:'EY-Parthenon (Strategy)'},
+      {id:'vme', name:'Valuation, Modelling & Economics'},
+      {id:'diligence', name:'Transaction Diligence'},
+      {id:'corpfin', name:'Corporate Finance / Lead Advisory'},
+      {id:'tse', name:'Transaction Strategy & Execution'},
+      {id:'trs', name:'Turnaround & Restructuring Strategy'},
+      {id:'infra', name:'Infrastructure Advisory'}
+    ]},
+    {id:'assurance', name:'Assurance', on:false, teams:[]},
+    {id:'consulting', name:'Consulting', on:false, teams:[]},
+    {id:'tax', name:'Tax', on:false, teams:[]}
+  ]},
+  {id:'deloitte', name:'Deloitte', on:false, lines:[]},
+  {id:'pwc', name:'PwC', on:false, lines:[]},
+  {id:'kpmg', name:'KPMG', on:false, lines:[]}
+];
+var CASE_ROLES = [
+  {id:'intern', name:'Intern / Analyst', note:'Structure and clarity matter most'},
+  {id:'consultant', name:'Consultant', note:'Expect follow-ups on your numbers'},
+  {id:'senior', name:'Senior Consultant', note:'You own the recommendation'},
+  {id:'manager', name:'Manager', note:'Client-ready judgement, hard pushback'}
+];
+var CASE_TIMES = {
+  read:    [{s:180,l:'3 min'},{s:300,l:'5 min'},{s:600,l:'10 min'},{s:900,l:'15 min'},{s:0,l:'Untimed'}],
+  present: [{s:180,l:'3 min'},{s:300,l:'5 min'},{s:600,l:'10 min'},{s:900,l:'15 min'}],
+  qa:      [{n:2,l:'2 questions'},{n:3,l:'3 questions'},{n:5,l:'5 questions'}]
+};
+
+var CASES = [
+  {
+    id:'grid', title:'The utility that ran out of electrons', sector:'Power & Utilities',
+    team:'parthenon', difficulty:'medium',
+    blurb:'A regulated utility is being asked to serve 4 GW of new data-centre load it cannot currently deliver.',
+    passage:
+"Your client, Meridian Power, is a regulated electric utility serving 3.1 million customers across three US states. For two decades its load grew at 0.7% a year and its planning was, in its own CFO's words, \"gloriously boring\".\n\n"+
+"That has changed. Over the last eighteen months Meridian has received interconnection requests totalling 4.2 GW from hyperscale data-centre developers — equivalent to roughly 38% of its current peak demand. Three of the requests carry deadlines inside 30 months. Meridian's existing interconnection queue already runs to seven years, and its two largest substations are at 94% utilisation.\n\n"+
+"Meridian's board sees an obvious opportunity: this is the first real load growth in a generation, and the sector is repricing on exactly this theme. Utility M&A has been the standout of 2026, and every large regulated platform is being valued on its ability to serve AI-driven demand.\n\n"+
+"But the board is split. Meeting the requests requires an estimated $9.4bn of capital over six years — new generation, 340 miles of transmission, and two new substations — against Meridian's current rate base of $21bn. The regulator in its largest state has signalled discomfort with residential customers funding infrastructure whose primary beneficiary is a handful of technology companies, and a rate case is due in 14 months. Meanwhile two of the four developers have indicated they will go elsewhere if firm capacity is not committed within 12 months, and none will sign take-or-pay contracts beyond 10 years — against assets with 40-year lives.\n\n"+
+"A rival utility two states over has just announced a $67bn merger explicitly framed as building a platform for rising power demand.\n\n"+
+"The CEO has asked EY to advise. She wants a recommendation, not a list of considerations.",
+    exhibit:{title:'Meridian Power — selected figures', rows:[
+      ['Current rate base','$21.0bn'],['Allowed ROE','9.8%'],['Peak demand','11.1 GW'],
+      ['New interconnection requests','4.2 GW'],['Capex required','$9.4bn over 6 years'],
+      ['Current net debt / EBITDA','5.1x'],['Rating','BBB (negative outlook)'],
+      ['Residential customers','2.6m of 3.1m'],['Next rate case','In 14 months']
+    ]},
+    task:'Should Meridian commit the capital to serve this load? Present your recommendation, your reasoning, and what you would need to believe for it to be right.',
+    angles:['Who bears the risk if the load does not materialise','Contract tenor vs asset life mismatch','Regulatory and political feasibility ahead of the rate case','Balance sheet capacity at 5.1x and BBB negative','Whether partial commitment or phasing is available','What the merger next door implies about strategic optionality']
+  },
+  {
+    id:'carveout', title:'The year of the carve-out', sector:'Industrials',
+    team:'tse', difficulty:'hard',
+    blurb:'A diversified industrial wants to separate its slowest division. The separation may cost more than the division is worth.',
+    passage:
+"Kestrel Industries is a diversified manufacturer with four divisions: Automation ($4.1bn revenue, 22% EBITDA margin), Flow Control ($2.8bn, 18%), Building Products ($2.2bn, 11%) and Legacy Components ($1.4bn, 6%).\n\n"+
+"Kestrel trades at 9.2x EBITDA. Pure-play automation peers trade at 15x. The board has read the same research everyone else has: 2026 is being called the year of the carve-out, divestiture volumes hit their highest level since 2021, and roughly half of dealmakers expect carve-out activity to keep growing. Activists have noticed. One has built a 4% stake and written publicly that Kestrel is \"a good automation company wearing three anchors\".\n\n"+
+"The board has asked EY to assess separating Building Products and Legacy Components.\n\n"+
+"Diligence has surfaced complications. The two divisions share a single ERP instance with the rest of the group, migration is quoted at 26 months. They share 11 of 34 manufacturing sites, in most cases sharing a single roof and a single environmental permit. Legacy Components is the group's second-largest employer in a region where Kestrel's political relationships matter for Automation's largest contract. Stranded corporate costs are estimated at $95m annually — costs currently allocated to the divisions that will not disappear when they leave. One-time separation costs are estimated at $310m to $420m.\n\n"+
+"Building Products has attracted two private-equity approaches at around 7x EBITDA. Legacy Components has attracted none.\n\n"+
+"The CFO's question is blunt: \"Is this value creation, or are we paying $400m to make a slide look better?\"",
+    exhibit:{title:'Kestrel Industries — divisional summary', rows:[
+      ['Automation','$4.1bn rev · 22% margin · 15x peer multiple'],
+      ['Flow Control','$2.8bn rev · 18% margin · 11x peer multiple'],
+      ['Building Products','$2.2bn rev · 11% margin · 7x indicated'],
+      ['Legacy Components','$1.4bn rev · 6% margin · no bids'],
+      ['Group multiple today','9.2x EBITDA'],
+      ['Stranded costs','~$95m per year'],
+      ['One-time separation cost','$310m–$420m'],
+      ['Shared sites','11 of 34'],['ERP migration','26 months']
+    ]},
+    task:'Advise the board: separate both, separate one, or neither. Show the value logic and be explicit about what would change your answer.',
+    angles:['Multiple re-rating vs stranded costs and one-time spend','Whether Legacy Components is saleable at all','Sequencing: which asset first, and why','Shared sites and permits as a structural constraint','The political relationship risk to Automation','What the activist actually wants vs what creates value']
+  },
+  {
+    id:'exitbacklog', title:'Six years and counting', sector:'Private Equity',
+    team:'corpfin', difficulty:'medium',
+    blurb:'A sponsor needs an exit from an asset it has held far too long, in a market where everyone is trying the same thing.',
+    passage:
+"Aldgate Partners acquired Novara Diagnostics in 2020 for $840m (11x EBITDA of $76m). The plan was a five-year hold and a trade sale to a strategic. It is now year six.\n\n"+
+"Novara has performed: EBITDA is $131m, revenue has compounded at 9%, and the business converts 88% of EBITDA to cash. The problem is not the asset. The problem is the queue. Roughly a third of private-equity-held companies globally have now been held more than five years, up from a quarter a year ago, and Aldgate's LPs are asking pointed questions about distributions. Aldgate's fund is at year nine of a ten-year life with two one-year extensions available.\n\n"+
+"Three routes are open.\n\n"+
+"A trade sale: two strategics have looked. Both are distracted by larger deals of their own, and indicative interest came in at 10.5x — below entry multiple, despite EBITDA nearly doubling.\n\n"+
+"A continuation vehicle: Aldgate's secondaries advisor believes a CV could clear at 12x with a new investor base. It solves liquidity for LPs who want out and lets Aldgate keep an asset it likes. It also invites the obvious question of why Aldgate is buying from itself, and the pricing is set by a process Aldgate influences.\n\n"+
+"An IPO: the window is open for quality assets, but Novara at ~$1.6bn would be a small-cap listing with limited float, and management has never run a public company.\n\n"+
+"Novara's CEO has told Aldgate privately that she will leave if there is another two-year hold with no liquidity for her rolled equity.",
+    exhibit:{title:'Novara Diagnostics — deal facts', rows:[
+      ['Entry (2020)','$840m at 11.0x'],['Entry EBITDA','$76m'],['Current EBITDA','$131m'],
+      ['Revenue CAGR','9%'],['Cash conversion','88%'],['Net debt','$390m'],
+      ['Trade sale indication','10.5x'],['CV indication','12.0x'],['Fund life','Year 9 of 10 (+2)'],
+      ['CEO rolled equity','$14m, unvested liquidity']
+    ]},
+    task:'Recommend an exit route to the Aldgate investment committee. Justify it, and address the conflict question head-on.',
+    angles:['Why a doubled EBITDA still gets a lower multiple','Conflict of interest in a continuation vehicle and how to manage it','LP liquidity vs asset quality — whose interest governs','Management retention as a live constraint on timing','Fund life mechanics forcing the decision','What a 10.5x trade sale actually returns vs holding']
+  },
+  {
+    id:'privatecredit', title:'The first cycle', sector:'Financial Services',
+    team:'trs', difficulty:'hard',
+    blurb:'A software borrower is about to breach covenants. Its lender is a private credit fund facing redemptions of its own.',
+    passage:
+"Halden Software provides workflow tools to mid-market logistics firms. In 2022 it was bought by a sponsor for $610m, financed with $340m of unitranche debt from a single private credit fund, Brightmoor Capital.\n\n"+
+"The debt was structured on 2022 assumptions: 14% ARR growth, 92% gross retention, and an exit inside five years. Actual 2026 performance is 4% ARR growth and 84% gross retention. Two of Halden's largest customers have not churned but have cut seats by a third, citing their own automation programmes. Halden's leverage is now 7.8x against a 7.0x covenant tested at the end of next quarter.\n\n"+
+"Brightmoor has problems of its own. Private credit is being tested through its first real cycle as a major asset class: borrower defaults and credit losses have prompted redemption requests and closer regulatory scrutiny in the UK, US and Europe. Brightmoor's own investors have asked for more disclosure on software exposure. A public restructuring of Halden would be Brightmoor's second this year.\n\n"+
+"The sponsor has $30m of dry powder it could inject but says it will only do so against a reset of terms. Brightmoor has floated a payment-in-kind toggle and a covenant holiday in exchange for equity warrants. Halden's management wants to buy time by cutting R&D — the same R&D that its remaining customers cite as the reason they stay.\n\n"+
+"EY has been engaged by the lender.",
+    exhibit:{title:'Halden Software — position', rows:[
+      ['Acquisition (2022)','$610m'],['Unitranche debt','$340m (Brightmoor, sole lender)'],
+      ['Underwritten ARR growth','14%'],['Actual ARR growth','4%'],
+      ['Underwritten retention','92%'],['Actual retention','84%'],
+      ['Leverage now','7.8x'],['Covenant','7.0x, tested next quarter'],
+      ['Sponsor dry powder','$30m, conditional'],['Cash runway','9 months']
+    ]},
+    task:'Advise Brightmoor. Amend and extend, enforce, or convert? Present your recommendation and the reasoning behind it.',
+    angles:['Is this a liquidity problem or a business-model problem','What "amend and extend" is really deferring','PIK toggles as value transfer vs genuine relief','The lender\'s own optics and redemption pressure as a real constraint','Cutting R&D as the fastest route to a worse asset','Who has leverage in a single-lender structure']
+  },
+  {
+    id:'patentcliff', title:'The cliff', sector:'Life Sciences',
+    team:'diligence', difficulty:'medium',
+    blurb:'A pharma major must replace a third of its revenue in four years. The target it wants has one very good drug and one very large question.',
+    passage:
+"Corveth Pharmaceuticals generates $18.2bn of revenue. Its lead product, an autoimmune therapy, contributes $6.1bn and loses exclusivity in 2030. Analysts have modelled the cliff for years; Corveth's shares trade at a discount that assumes it will not fill the gap.\n\n"+
+"Life sciences dealmaking has been one of the most active corners of the 2026 market — deal value in the sector rose sharply year-on-year as majors moved to buy pipeline rather than build it. Corveth's board is now a buyer, and it has identified Talvane Bio.\n\n"+
+"Talvane has one approved asset, an oral therapy for a metabolic indication, launched 20 months ago and annualising at $780m with strong physician uptake. It has three pipeline assets, of which one is in Phase III.\n\n"+
+"EY is running financial and commercial diligence. Four things have emerged.\n\n"+
+"First, 61% of Talvane's script volume comes from 1,900 prescribers, and 40% of those sit inside two integrated health systems, both of which are renegotiating formularies this year.\n\n"+
+"Second, Talvane's gross-to-net has widened from 22% to 34% since launch, which management describes as \"expected access investment\".\n\n"+
+"Third, the Phase III asset shares a mechanism with a competitor programme that read out ambiguously in April.\n\n"+
+"Fourth, Talvane's two founding scientists have retention agreements that expire six months after any change of control.\n\n"+
+"The asking price is $14.8bn. Corveth's CEO has told the board this is the deal that fixes 2030.",
+    exhibit:{title:'Talvane Bio — diligence extract', rows:[
+      ['Asking price','$14.8bn'],['Approved asset run-rate','$780m annualised'],
+      ['Months since launch','20'],['Prescriber concentration','61% from 1,900 prescribers'],
+      ['— of which in 2 health systems','40%'],
+      ['Gross-to-net at launch','22%'],['Gross-to-net now','34%'],
+      ['Phase III asset','Shared mechanism with ambiguous competitor readout'],
+      ['Founder retention','Expires 6 months post-CoC'],
+      ["Corveth's cliff (2030)",'$6.1bn of $18.2bn revenue']
+    ]},
+    task:'Present your diligence findings to the Corveth deal committee. Does the price hold? What are you telling them to do?',
+    angles:['Gross-to-net widening as a demand signal, not an access cost','Prescriber and payer concentration as revenue risk','Whether the Phase III asset is in the price at all','Founder retention and what actually walks out the door','Deal urgency (the 2030 cliff) as a negotiating weakness','What you would price vs what you would walk from']
+  },
+  {
+    id:'compute', title:'Buy the compute, or rent it', sector:'Technology',
+    team:'parthenon', difficulty:'medium',
+    blurb:'An enterprise software firm is deciding whether to own GPU capacity. The market has stopped rewarding the word "AI".',
+    passage:
+"Sarnia Systems sells enterprise resource software to mid-market manufacturers. Revenue is $2.4bn, growing 7%, with 31% EBITDA margins and a 6.8x net-debt-free balance sheet.\n\n"+
+"Sarnia's product roadmap depends on inference capacity: its new forecasting features run continuously against customer data. Today it rents from two hyperscalers. Its cloud bill has grown from $61m to $214m in three years and is forecast to reach $500m within two.\n\n"+
+"The CTO has proposed acquiring Halcyon Compute, an operator of two mid-sized data centres with 40 MW of contracted power, for $1.9bn. His argument: at $500m of annual spend, owning is cheaper than renting, and control of capacity is becoming a competitive weapon.\n\n"+
+"The CFO disagrees. He points out that Sarnia would be buying a power-and-cooling business it has never run, that Halcyon's 40 MW is contracted but not yet all energised, and that the market has become notably more sceptical about AI-justified acquisitions. In 2025, roughly a third of the hundred largest corporate deals cited AI in their strategic rationale; in the first half of 2026 that fell to 17%, with the remaining references concentrated in companies genuinely close to the buildout. Buyers are being more disciplined about where AI creates durable demand and where a partnership or a minority stake is the better route.\n\n"+
+"Sarnia's own shares fell 6% on the day the CTO's proposal leaked.",
+    exhibit:{title:'Sarnia Systems — the decision', rows:[
+      ['Revenue / growth','$2.4bn / 7%'],['EBITDA margin','31%'],
+      ['Cloud spend 3 years ago','$61m'],['Cloud spend today','$214m'],
+      ['Cloud spend forecast (2y)','~$500m'],
+      ['Halcyon asking price','$1.9bn'],['Halcyon contracted power','40 MW (not fully energised)'],
+      ['Halcyon current utilisation','58%'],
+      ['AI cited in top-100 deal rationale','33% (2025) → 17% (H1 2026)'],
+      ['Share price reaction to leak','-6%']
+    ]},
+    task:'Advise Sarnia\'s board: buy, partner, or keep renting. Make a recommendation and defend it.',
+    angles:['Build-vs-buy-vs-rent at $500m of annual spend','Whether Sarnia can operate a power and cooling business','Contracted vs energised MW — what is actually being bought','Why the market punished the leak','Partnership or minority stake as the disciplined middle path','What utilisation and power cost assumptions the case turns on']
+  },
+  {
+    id:'tariff', title:'Cost, price, or footprint', sector:'Consumer Products',
+    team:'tse', difficulty:'easy',
+    blurb:'A household brand is being squeezed from both ends and has three months to choose a response.',
+    passage:
+"Brightley Home makes small kitchen appliances sold through big-box retail and direct-to-consumer. Revenue is $1.6bn. Eighty-one percent of units are manufactured in a single Asian country.\n\n"+
+"Two forces have converged. Tariffs on Brightley's primary import category rose in stages through late 2025 and early 2026, adding roughly 340 basis points to landed cost. At the same time US inflation has re-accelerated — CPI moved from 2.4% in the opening months of 2026 to 3.8% by April — and Brightley's retail partners have made clear they will not accept list price increases in the current negotiating round.\n\n"+
+"Brightley's gross margin has fallen from 38% to 31% in five quarters. Its DTC channel, 19% of revenue, still carries a 47% margin but has stopped growing.\n\n"+
+"Three options are live. Reshoring or nearshoring production: a Mexican contract manufacturer can take 30% of volume within 14 months, at a unit cost 9% above the current source before tariffs. Reformulating the product range: value-engineering the three highest-volume SKUs could recover 200bps, but the products carry the brand's reliability reputation. Or pushing price through DTC only, where Brightley controls the shelf, and accepting margin compression in retail.\n\n"+
+"The CEO wants a recommendation for the board in three months and has said, unprompted, that she does not want \"a matrix\".",
+    exhibit:{title:'Brightley Home — margin bridge', rows:[
+      ['Revenue','$1.6bn'],['Units from single country','81%'],
+      ['Tariff impact on landed cost','+340bps'],
+      ['Gross margin 5 quarters ago','38%'],['Gross margin now','31%'],
+      ['US CPI','2.4% (Jan/Feb 2026) → 3.8% (Apr 2026)'],
+      ['DTC share of revenue','19% at 47% margin'],
+      ['Mexico option','30% of volume in 14 months, +9% unit cost pre-tariff'],
+      ['Value engineering','+200bps, reputational risk']
+    ]},
+    task:'Give the CEO a recommendation. One answer, with the reasoning and the risks you accept in choosing it.',
+    angles:['Which lever moves margin fastest vs which is durable','Concentration risk at 81% single-country','Whether DTC can carry price without cannibalising retail relationships','Value engineering against a reliability brand','What happens if tariffs reverse after you have reshored','Sequencing: these are not mutually exclusive']
+  },
+  {
+    id:'defence', title:'Sovereignty has a price', sector:'Aerospace & Defence',
+    team:'parthenon', difficulty:'medium',
+    blurb:'A European defence supplier can grow fast — if it accepts an ownership structure it may not want.',
+    passage:
+"Valemont Systems is a European supplier of guidance and targeting subsystems. Revenue is €740m, growing 19% as defence budgets across the continent rise and modernisation programmes accelerate. Defence M&A has been one of the stronger areas of the 2026 market, driven by budget visibility, sovereignty requirements, and demand for AI-enabled systems.\n\n"+
+"Valemont has three routes on the table.\n\n"+
+"A US prime contractor has offered €2.1bn — a 14.2x EBITDA multiple, well above European defence comparables. The prime wants Valemont's technology inside its own platforms and would keep the engineering base where it is, for now. Two European governments have privately indicated that a US acquisition would complicate Valemont's participation in sovereign programmes, which are 44% of its order book.\n\n"+
+"A European consolidation: merging with a smaller domestic rival at an implied 11x, creating a national champion with obvious political support and less obvious industrial logic. The two companies overlap in 60% of their product lines.\n\n"+
+"Or standalone growth, funded by a €600m capital raise, in a market where scale is increasingly the determinant of who wins prime contracts.\n\n"+
+"Valemont's founder holds 38% and is 71 years old. His stated priority is that \"the engineering stays here\". His stated priority in the last board meeting was liquidity.",
+    exhibit:{title:'Valemont Systems — options', rows:[
+      ['Revenue / growth','€740m / 19%'],
+      ['US prime offer','€2.1bn at 14.2x EBITDA'],
+      ['European merger','implied 11x, 60% product overlap'],
+      ['Standalone','€600m raise required'],
+      ['Sovereign programmes','44% of order book'],
+      ['Founder stake','38%, age 71'],
+      ['European defence comparables','9x–11x EBITDA']
+    ]},
+    task:'Advise the Valemont board. Which route, and what have you decided to trade away?',
+    angles:['Why the US buyer pays 14.2x and what that premium is for','44% of the order book as a hard constraint on the best price','60% product overlap: is the merger industrial logic or politics','Founder liquidity vs founder rhetoric','Whether standalone is viable or just slower decline','What sovereignty actually costs shareholders here']
+  },
+  {
+    id:'crossborder', title:'The inbound bid', sector:'Cross-border M&A',
+    team:'vme', difficulty:'hard',
+    blurb:'A Japanese acquirer is bidding aggressively for a US asset. Your job is to say what it is worth, not what it costs.',
+    passage:
+"Tsurugi Holdings, a Japanese industrial group, is bidding for Camden Fluid Systems, a US manufacturer of precision pumps. Camden's revenue is $920m with a 19% EBITDA margin.\n\n"+
+"Tsurugi's rationale is strategic and, in its own words, structural. Japanese corporates have been ramping up outbound acquisitions, supported by decades of cheap capital and a need to deploy it productively even as domestic rates rise. Tariff policy has added urgency for international buyers, reinforcing the importance of securing a stronger foothold in US markets — Tsurugi currently serves the US through exports that now carry a meaningful tariff.\n\n"+
+"EY has been asked to value Camden. Three tensions have surfaced.\n\n"+
+"Tsurugi's board has approved up to $2.4bn — 13.7x EBITDA. Camden's US public comparables trade at 10.5x. Tsurugi's own cost of capital is materially lower than a US buyer's, and its treasury argues this justifies the multiple.\n\n"+
+"Camden's largest customer, 23% of revenue, is a US federal contractor whose contracts contain change-of-control provisions that may be triggered by foreign ownership.\n\n"+
+"Camden's tariff exposure runs both ways: 31% of Camden's components are imported, and its own landed costs have risen. Tsurugi's synergy model assumes it can supply those components internally at a 12% saving, which is also the largest single line in the synergy case.\n\n"+
+"Tsurugi's CFO has asked, pointedly, whether a lower cost of capital is a reason to pay more or simply a reason it can.",
+    exhibit:{title:'Camden Fluid Systems — valuation inputs', rows:[
+      ['Revenue / EBITDA margin','$920m / 19%'],
+      ['Board-approved ceiling','$2.4bn (13.7x)'],
+      ['US public comparables','10.5x EBITDA'],
+      ['Largest customer','23% of revenue, federal contractor'],
+      ['Change-of-control risk','Foreign ownership may trigger'],
+      ['Imported components','31% of BOM'],
+      ['Assumed component synergy','12% saving — largest synergy line'],
+      ['Tsurugi cost of capital','Materially below US peers']
+    ]},
+    task:'Present your valuation view to Tsurugi. What is Camden worth, and what should Tsurugi actually pay?',
+    angles:['The CFO\'s question: does a low WACC justify a higher price or merely permit one','Standalone value vs value to this specific buyer vs price','23% customer concentration with a change-of-control trigger','Whether the largest synergy line survives diligence','Who captures synergy value in a competitive process','What you would put in the fairness opinion versus the negotiation']
+  },
+  {
+    id:'infra', title:'Asset-heavy, on purpose', sector:'Infrastructure',
+    team:'infra', difficulty:'medium',
+    blurb:'An infrastructure fund is rotating into hard assets. The asset in front of it has a 30-year life and a 10-year contract.',
+    passage:
+"Ardnoch Infrastructure Partners is raising its fourth fund. Its thesis reflects where capital has been moving: private equity has been rotating into asset-heavy sectors such as energy and infrastructure, where tangible cash flows offer a hedge in a higher-for-longer rate environment.\n\n"+
+"Ardnoch is evaluating Ferrier Cooling, which owns and operates district cooling systems serving three data-centre campuses. The asset is real, contracted, and boring — Ardnoch's three favourite adjectives.\n\n"+
+"The numbers: enterprise value $1.35bn, EBITDA $96m (14.1x), 30-year physical asset life, and contracts with three counterparties averaging 9.5 years remaining. Two of the three counterparties are investment grade. The third, 34% of revenue, is a well-funded private data-centre developer with no rating and two years of operating history.\n\n"+
+"Two issues are unresolved.\n\n"+
+"Ferrier's contracts are take-or-pay on capacity but pass through power costs. In the three markets Ferrier serves, wholesale power prices have risen 40%, 55% and 22% respectively over 24 months as data-centre load has arrived. The pass-through protects Ferrier's margin but has made its customers' total cost of occupancy materially worse, and one has begun evaluating on-site generation.\n\n"+
+"Second, Ferrier's replacement capex is back-ended: $210m falls in years 8 to 12, beyond most of the current contract terms.\n\n"+
+"Ardnoch's investment committee meets in a week.",
+    exhibit:{title:'Ferrier Cooling — investment summary', rows:[
+      ['Enterprise value','$1.35bn'],['EBITDA','$96m (14.1x)'],
+      ['Physical asset life','30 years'],['Weighted avg contract term','9.5 years'],
+      ['Counterparty 1 & 2','Investment grade'],
+      ['Counterparty 3','34% of revenue, unrated, 2yr history'],
+      ['Power price moves (24m)','+40% / +55% / +22%'],
+      ['Power cost treatment','Pass-through to customers'],
+      ['Replacement capex','$210m in years 8–12']
+    ]},
+    task:'Present to the Ardnoch investment committee: invest or pass, at what price, and on what terms.',
+    angles:['Contract term vs asset life vs capex timing — the core mismatch','Pass-through protects margin but creates churn risk','34% unrated counterparty concentration','On-site generation as the real competitive threat','What terminal value assumption the price implies','What structure or price protection would make this investable']
+  }
+];
+
+
+/* ---- case setup ---- */
+function viewCase(){
+  var st = store.get('room:case', {firm:'ey', line:'sat', team:'parthenon', role:'consultant',
+                                   caseId:CASES[0].id, read:600, present:300, qa:3});
+  var root = h('div',{style:'padding-top:40px'});
+  root.appendChild(backBtn('home'));
+  root.appendChild(eyebrow('Case study','gold'));
+  root.appendChild(h('h2',{cls:'title', text:'Prepare a case'}));
+  root.appendChild(h('p',{cls:'muted', style:'font-size:15px;margin:0 0 28px;line-height:1.55;max-width:600px',
+    text:'Read the case against the clock, present your recommendation out loud, then take questions from the panel. Cases are written against real FY2026 market conditions; the companies are fictional.'}));
+
+  // firm
+  var firmWrap = h('div'); firmWrap.appendChild(eyebrow('Firm'));
+  var frow = h('div',{cls:'row', style:'margin-top:10px'});
+  CASE_FIRMS.forEach(function(f){
+    var b = h('button',{cls:'chip '+(st.firm===f.id?'on':''), disabled:!f.on, style:f.on?'':'opacity:.4;cursor:not-allowed'},[
+      h('div',{style:'font-size:14px;font-weight:500', text:f.name}),
+      h('div',{cls:'mono faint', style:'font-size:10px;margin-top:2px', text:f.on?'available':'not yet'})
+    ]);
+    if (f.on) b.addEventListener('click', function(){ st.firm=f.id; save(); redraw(); });
+    frow.appendChild(b);
+  });
+  firmWrap.appendChild(frow); root.appendChild(firmWrap);
+
+  // service line + team
+  var lineWrap = h('div',{style:'margin-top:22px'});
+  root.appendChild(lineWrap);
+
+  // role
+  var roleWrap = h('div',{style:'margin-top:22px'});
+  roleWrap.appendChild(eyebrow('Level you are interviewing at'));
+  var rrow = h('div',{cls:'row', style:'margin-top:10px'});
+  CASE_ROLES.forEach(function(r){
+    rrow.appendChild(h('button',{cls:'chip '+(st.role===r.id?'on':''), onclick:function(){
+      st.role=r.id; save();
+      Array.prototype.forEach.call(rrow.children,function(c){c.className='chip';});
+      this.className='chip on';
+    }},[ h('div',{style:'font-size:14px;font-weight:500', text:r.name}),
+         h('div',{cls:'faint', style:'font-size:11px;margin-top:2px', text:r.note}) ]));
+  });
+  roleWrap.appendChild(rrow); root.appendChild(roleWrap);
+
+  // case picker
+  var caseWrap = h('div',{style:'margin-top:26px'});
+  caseWrap.appendChild(eyebrow('Choose a case'));
+  caseWrap.appendChild(h('div',{cls:'faint', style:'font-size:12px;margin:4px 0 10px', text:CASES.length+' cases · FY2026 market context'}));
+  var cgrid = h('div',{cls:'picks', style:'grid-template-columns:repeat(auto-fill,minmax(250px,1fr))'});
+  CASES.forEach(function(c){
+    var card = h('button',{cls:'pick cardhover '+(st.caseId===c.id?'on':''), onclick:function(){
+      st.caseId=c.id; save();
+      Array.prototype.forEach.call(cgrid.children,function(x){x.className='pick cardhover';});
+      this.className='pick cardhover on';
+    }},[
+      h('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:8px'},[
+        h('span',{cls:'mono', style:'font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)', text:c.sector}),
+        h('span',{cls:'diff '+c.difficulty, text:c.difficulty})
+      ]),
+      h('div',{style:'font-family:var(--serif);font-size:15.5px;line-height:1.35', text:c.title}),
+      h('div',{cls:'muted', style:'font-size:12.3px;line-height:1.45', text:c.blurb})
+    ]);
+    cgrid.appendChild(card);
+  });
+  caseWrap.appendChild(cgrid); root.appendChild(caseWrap);
+
+  // timings
+  var timeWrap = h('div',{style:'margin-top:26px'});
+  timeWrap.appendChild(eyebrow('Timing'));
+  var tgrid = h('div',{style:'display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;margin-top:12px'});
+  tgrid.appendChild(timePick('Reading time', CASE_TIMES.read, 's', st.read, function(v){ st.read=v; save(); }));
+  tgrid.appendChild(timePick('Presentation length', CASE_TIMES.present, 's', st.present, function(v){ st.present=v; save(); }));
+  tgrid.appendChild(timePick('Panel questions', CASE_TIMES.qa, 'n', st.qa, function(v){ st.qa=v; save(); }));
+  timeWrap.appendChild(tgrid); root.appendChild(timeWrap);
+
+  var goBtn = btn('Take the case',{icon:'door', onclick:function(){
+    var c = CASES.filter(function(x){return x.id===st.caseId;})[0];
+    S.case = { cfg: JSON.parse(JSON.stringify(st)), c: c, phase:'read' };
+    go('caseRoom');
+  }});
+  var note = h('span',{cls:'faint', style:'font-size:13px'});
+  root.appendChild(h('div',{cls:'row', style:'margin-top:32px'},[goBtn, note]));
+  function refresh(){
+    goBtn.disabled = !hasConn();
+    note.textContent = hasConn() ? (canWhisper() ? '' : 'Tip: add a Groq key in Settings for accurate Whisper transcription.') : 'Add a model key in Settings first.';
+    note.style.color = hasConn() ? 'var(--faint)' : 'var(--rose)';
+  }
+  function save(){ store.set('room:case', st); }
+  function redraw(){
+    clear(lineWrap);
+    var firm = CASE_FIRMS.filter(function(f){return f.id===st.firm;})[0];
+    lineWrap.appendChild(eyebrow('Service line'));
+    var lrow = h('div',{cls:'row', style:'margin-top:10px'});
+    firm.lines.forEach(function(l){
+      var b = h('button',{cls:'chip '+(st.line===l.id?'on':''), disabled:!l.on, style:l.on?'':'opacity:.4;cursor:not-allowed'},[
+        h('div',{style:'font-size:14px;font-weight:500', text:l.name}),
+        h('div',{cls:'mono faint', style:'font-size:10px;margin-top:2px', text:l.on?l.teams.length+' teams':'not yet'})
+      ]);
+      if (l.on) b.addEventListener('click', function(){ st.line=l.id; save(); redraw(); });
+      lrow.appendChild(b);
+    });
+    lineWrap.appendChild(lrow);
+    var line = firm.lines.filter(function(l){return l.id===st.line;})[0];
+    if (line && line.teams.length){
+      lineWrap.appendChild(h('div',{cls:'mono faint', style:'font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;margin:16px 0 8px', text:'Team'}));
+      var trow = h('div',{cls:'row', style:'gap:6px'});
+      line.teams.forEach(function(t){
+        trow.appendChild(h('button',{cls:'pill '+(st.team===t.id?'on':''), onclick:function(){
+          st.team=t.id; save();
+          Array.prototype.forEach.call(trow.children,function(c){c.className='pill';});
+          this.className='pill on';
+        }}, t.name));
+      });
+      lineWrap.appendChild(trow);
+    }
+  }
+  redraw(); refresh();
+  return root;
+}
+function timePick(label, opts, kind, cur, onPick){
+  var d = h('div');
+  d.appendChild(h('div',{cls:'mono faint', style:'font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px', text:label}));
+  var row = h('div',{cls:'row', style:'gap:6px'});
+  opts.forEach(function(o){
+    var val = kind==='s' ? o.s : o.n;
+    row.appendChild(h('button',{cls:'pill '+(cur===val?'on':''), onclick:function(){
+      onPick(val);
+      Array.prototype.forEach.call(row.children,function(c){c.className='pill';});
+      this.className='pill on';
+    }}, o.l));
+  });
+  d.appendChild(row); return d;
+}
+
+/* ---- the case room: read -> present -> Q&A ---- */
+function viewCaseRoom(){
+  var K = S.case, c = K.c, cfg = K.cfg;
+  var root = h('div',{style:'padding-top:24px'});
+  var rec = makeRecorder();
+  var readLeft = cfg.read, presLeft = cfg.present, elapsed = 0;
+  var readTimer=null, presTimer=null, dict=null, liveText='', recording=false, actx=null, micStream=null, lvlRaf=null;
+  var finalTranscript = '', qaList = [], curDiff='medium';
+
+  onLeave(function(){
+    if(readTimer) clearInterval(readTimer); if(presTimer) clearInterval(presTimer);
+    if(lvlRaf) cancelAnimationFrame(lvlRaf);
+    try{ rec.cancel(); }catch(e){}
+    try{ dict && dict.stop(); }catch(e){}
+    try{ actx && actx.close(); }catch(e){}
+    try{ micStream && micStream.getTracks().forEach(function(t){t.stop();}); }catch(e){}
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  });
+
+  var head = h('div',{style:'display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px;flex-wrap:wrap'});
+  var clock = h('div',{cls:'mono', style:'font-size:26px'});
+  head.appendChild(h('div',{},[
+    h('div',{style:'display:flex;align-items:center;gap:9px;flex-wrap:wrap'},[
+      h('span',{cls:'mono', style:'font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)', text:c.sector}),
+      h('span',{cls:'diff '+c.difficulty, text:c.difficulty}),
+      h('span',{cls:'src', text:'EY · SAT'})
+    ]),
+    h('h2',{style:'font-family:var(--serif);font-weight:500;font-size:26px;margin:8px 0 0', text:c.title})
+  ]));
+  head.appendChild(h('div',{style:'text-align:right'},[ clock, h('div',{cls:'mono faint', style:'font-size:10.5px', id:'phaseLbl'}) ]));
+  root.appendChild(head);
+
+  var body = h('div');
+  root.appendChild(body);
+
+  function fmt(s){ return mmss(Math.max(0,s)); }
+  function phaseLbl(t){ head.querySelector('#phaseLbl').textContent = t; }
+
+  /* ---------- READ ---------- */
+  function showRead(){
+    clear(body);
+    var grid = h('div',{cls:'roomgrid'});
+    var main = h('div',{cls:'card', style:'padding:24px'});
+    c.passage.split('\n\n').forEach(function(p){
+      main.appendChild(h('p',{style:'margin:0 0 14px;font-size:14.8px;line-height:1.7', text:p}));
+    });
+    main.appendChild(h('div',{style:'border-top:1px solid var(--line);margin:18px 0 0;padding-top:16px'},[
+      eyebrow('Your task','gold'),
+      h('p',{style:'margin:9px 0 0;font-size:15px;line-height:1.6;font-family:var(--serif)', text:c.task})
+    ]));
+    grid.appendChild(main);
+
+    var side = h('div',{cls:'qrail2'});
+    side.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:11px', text:c.exhibit.title}));
+    c.exhibit.rows.forEach(function(r){
+      side.appendChild(h('div',{style:'display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--lineSoft)'},[
+        h('span',{cls:'faint', style:'font-size:11.5px', text:r[0]}),
+        h('span',{cls:'mono', style:'font-size:11.5px;text-align:right', text:r[1]})
+      ]));
+    });
+    grid.appendChild(side);
+    body.appendChild(grid);
+    body.appendChild(h('div',{cls:'row', style:'margin-top:20px'},[
+      btn('I am ready to present',{icon:'mic', onclick:startPresent}),
+      h('span',{cls:'faint', style:'font-size:12.5px', text: cfg.read ? 'Presenting starts automatically when reading time runs out.' : 'Untimed — take as long as you need.'})
+    ]));
+
+    phaseLbl('reading');
+    clock.textContent = cfg.read ? fmt(readLeft) : '--:--';
+    if (cfg.read){
+      readTimer = setInterval(function(){
+        readLeft--; clock.textContent = fmt(readLeft);
+        clock.style.color = readLeft <= 30 ? 'var(--rose)' : 'var(--ink)';
+        if (readLeft <= 0){ clearInterval(readTimer); startPresent(); }
+      },1000);
+    }
+  }
+
+  /* ---------- PRESENT ---------- */
+  function startPresent(){
+    if (readTimer){ clearInterval(readTimer); readTimer=null; }
+    clear(body);
+    phaseLbl('presenting');
+    clock.textContent = fmt(presLeft);
+
+    var liveBox = h('div',{cls:'live', style:'max-height:220px'});
+    liveBox.appendChild(h('span',{cls:'faint', text:'Your words appear here as you speak.'}));
+    var lvl = h('div',{cls:'lvlfill'});
+    var status = h('div',{cls:'faint', style:'font-size:12.5px;margin-top:10px;line-height:1.5'});
+    var startBtn = btn('Start presenting',{icon:'mic', onclick:toggle});
+    var doneBtn = btn('Done — take questions',{variant:'ghost', icon:'msg', onclick:endPresent, disabled:true});
+
+    var taskCard = h('div',{cls:'card', style:'padding:16px 18px;margin-bottom:14px'});
+    taskCard.appendChild(eyebrow('Your task','gold'));
+    taskCard.appendChild(h('p',{style:'margin:8px 0 0;font-size:14px;line-height:1.55;font-family:var(--serif)', text:c.task}));
+    body.appendChild(taskCard);
+    body.appendChild(h('div',{cls:'lvl'},[lvl]));
+    body.appendChild(liveBox);
+    body.appendChild(status);
+    body.appendChild(h('div',{cls:'row', style:'margin-top:16px'},[startBtn, doneBtn]));
+
+    if (!SR && !canWhisper()){
+      var ta = h('textarea',{cls:'input', rows:5, style:'margin-top:14px', placeholder:'No mic transcription available — type your presentation here.'});
+      ta.addEventListener('input', function(){ liveText = ta.value; doneBtn.disabled = !ta.value.trim(); });
+      body.appendChild(ta);
+      status.textContent = 'Voice needs Chrome/Edge, or a Groq key for Whisper. You can type instead.';
+    }
+
+    function toggle(){
+      if (recording){ stopMic(); startBtn.lastChild.textContent='Resume'; return; }
+      recording = true; startBtn.lastChild.textContent='Pause'; doneBtn.disabled=false;
+      // Dual capture: browser dictation drives the LIVE text, MediaRecorder feeds
+      // Whisper for the accurate final transcript.
+      if (canWhisper() && rec.supported()){
+        rec.start().then(function(){ status.textContent='Recording — Whisper will transcribe this accurately when you finish.'; })
+                   .catch(function(){ status.textContent='Mic blocked. Allow it, or type instead.'; });
+      }
+      if (SR){
+        dict = makeDictation(function(t){
+          liveText = t; clear(liveBox);
+          liveBox.appendChild(h('span',{text:t}));
+          liveBox.scrollTop = liveBox.scrollHeight;
+        }, function(){ if (recording && dict){ try{dict.start();}catch(e){} } });
+        if (dict){ dict.setBase(liveText); try{ dict.start(); }catch(e){} }
+      }
+      meter();
+      presTimer = setInterval(function(){
+        presLeft--; elapsed++;
+        clock.textContent = fmt(presLeft);
+        clock.style.color = presLeft <= 0 ? 'var(--rose)' : (presLeft <= 30 ? 'var(--gold)' : 'var(--ink)');
+        if (presLeft === 0) status.textContent = 'You are at time. In a real panel they would stop you here.';
+      },1000);
+    }
+    function stopMic(){
+      recording = false;
+      if (presTimer){ clearInterval(presTimer); presTimer=null; }
+      if (lvlRaf){ cancelAnimationFrame(lvlRaf); lvlRaf=null; }
+      try{ dict && dict.stop(); }catch(e){}
+      try{ actx && actx.close(); actx=null; }catch(e){}
+      try{ micStream && micStream.getTracks().forEach(function(t){t.stop();}); }catch(e){}
+    }
+    function meter(){
+      if (!navigator.mediaDevices) return;
+      navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){
+        micStream = s;
+        var AC = window.AudioContext || window.webkitAudioContext; if(!AC) return;
+        actx = new AC();
+        var an = actx.createAnalyser(); an.fftSize=256;
+        actx.createMediaStreamSource(s).connect(an);
+        var buf = new Uint8Array(an.fftSize);
+        (function loop(){
+          if (!actx || !recording) return;
+          an.getByteTimeDomainData(buf);
+          var sum=0; for(var i=0;i<buf.length;i++){ var v=(buf[i]-128)/128; sum+=v*v; }
+          lvl.style.width = Math.min(100, Math.sqrt(sum/buf.length)*280)+'%';
+          lvlRaf = requestAnimationFrame(loop);
+        })();
+      }).catch(function(){});
+    }
+    function endPresent(){
+      stopMic();
+      clear(body);
+      body.appendChild(loadingPane('Transcribing your presentation…','Whisper is turning your audio into text.'));
+      var p = (canWhisper() && rec.supported())
+        ? rec.stop().then(function(b){ return b ? transcribe(b) : ''; }).catch(function(){ return ''; })
+        : Promise.resolve('');
+      p.then(function(txt){
+        finalTranscript = (txt && txt.length > (liveText||'').length * 0.5) ? txt : (liveText || txt || '');
+        if (!finalTranscript.trim()){
+          clear(body);
+          body.appendChild(h('div',{cls:'card pad center'},[
+            h('p',{cls:'muted', style:'margin:0 0 14px', text:'Nothing was captured, so there is nothing to assess.'}),
+            btn('Back to the case',{variant:'subtle', onclick:function(){ go('case'); }})
+          ]));
+          return;
+        }
+        startQA();
+      });
+    }
+  }
+
+  /* ---------- Q&A ---------- */
+  function startQA(){
+    clear(body); phaseLbl('questions'); clock.textContent = '--:--';
+    var qCol = h('div');
+    var qBox = h('div',{cls:'card', style:'padding:18px 20px'});
+    var qEye = eyebrow('Question 1 of '+cfg.qa,'gold');
+    var qDiff = h('span',{cls:'diff medium', style:'margin-left:10px', text:'medium'});
+    var qText = h('p',{style:'margin:10px 0 0;font-size:16px;line-height:1.5;font-family:var(--serif)'});
+    qBox.appendChild(h('div',{style:'display:flex;align-items:center'},[qEye,qDiff]));
+    qBox.appendChild(qText);
+    qCol.appendChild(qBox);
+
+    var ans = h('textarea',{cls:'input', rows:3, placeholder:'Speak or type your answer…'});
+    var mic = h('button',{cls:'sq', html:icon('mic',16)});
+    var snd = h('button',{cls:'sq', html:icon('send',16), disabled:true});
+    ans.addEventListener('input', function(){ snd.disabled = !ans.value.trim(); });
+    ans.addEventListener('keydown', function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
+    qCol.appendChild(h('div',{cls:'composer', style:'border:none;padding-top:14px'},[
+      h('div',{cls:'rel'},[ans, h('div',{cls:'actions'},[mic,snd])])
+    ]));
+    qCol.appendChild(h('div',{style:'margin-top:14px'},[ btn('End & get report',{variant:'ghost', onclick:finish}) ]));
+
+    var rail = h('div',{cls:'qrail2'});
+    function drawRail(){
+      clear(rail);
+      rail.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:10px', text:'Panel questions'}));
+      if (!qaList.length) rail.appendChild(h('div',{cls:'faint', style:'font-size:12px', text:'They will appear here as they come.'}));
+      qaList.forEach(function(q,i){
+        var d = q.difficulty||'medium';
+        rail.appendChild(h('div',{cls:'qlog'},[
+          h('div',{cls:'n', text:String(i+1).padStart(2,'0')}),
+          h('div',{style:'min-width:0'},[ h('div',{cls:'t', text:q.q}), h('span',{cls:'diff '+d, text:d}) ])
+        ]));
+      });
+    }
+    body.appendChild(h('div',{cls:'roomgrid'},[qCol, rail]));
+    drawRail();
+
+    var listening=false;
+    var d2 = makeDictation(function(t){ ans.value=t; snd.disabled=!t.trim(); },
+                           function(){ listening=false; mic.className='sq'; mic.innerHTML=icon('mic',16); });
+    mic.addEventListener('click', function(){
+      if (!d2){ return; }
+      if (listening){ try{d2.stop();}catch(e){} return; }
+      d2.setBase(ans.value); try{ d2.start(); listening=true; mic.className='sq rec'; mic.innerHTML=icon('micOff',16); }catch(e){}
+    });
+    onLeave(function(){ try{d2&&d2.stop();}catch(e){} });
+
+    function ask(){
+      qText.textContent=''; snd.disabled=true;
+      qEye.textContent = 'Question '+(qaList.length+1)+' of '+cfg.qa;
+      var load = h('div',{cls:'faint', style:'display:flex;align-items:center;gap:9px;font-size:14px;margin-top:12px',
+        html: icon('load',15,'currentColor','spin')+'<span style="margin-left:4px">The panel is considering…</span>'});
+      qBox.appendChild(load);
+      var role = CASE_ROLES.filter(function(r){return r.id===cfg.role;})[0];
+      callJSON({
+        system:'You are an EY Strategy and Transactions partner on an interview panel, interviewing for a '+(role?role.name:'Consultant')+' role. '+
+          'You have just heard the candidate present a case. Ask ONE sharp question about what THEY actually said — press on a weak assumption, an unsupported number, a risk they skipped, or push them to commit to a view. '+
+          'Do not ask a generic question. Reference their own words. Be professional, not cruel.\n'+
+          'Angles the panel cares about for this case:\n'+ (c.angles||[]).map(function(a){return '- '+a;}).join('\n') + '\n'+
+          'Return ONLY JSON: {"question": string, "difficulty": one of [easy,medium,hard]}',
+        schema:'{"question":string,"difficulty":"easy"|"medium"|"hard"}',
+        messages:[{role:'user', content:'CASE TASK: '+c.task+'\n\nTHEIR PRESENTATION:\n'+finalTranscript.slice(0,3000)+
+          (qaList.length?('\n\nAlready asked: '+qaList.map(function(q){return q.q;}).join(' | ')):'')}],
+        maxTokens:500
+      }).then(function(d){
+        if (!d || !d.question) d = {question:'What is the single biggest risk to your recommendation?', difficulty:'medium'};
+        curDiff = ['easy','medium','hard'].indexOf(d.difficulty)>=0 ? d.difficulty : 'medium';
+        if (load.parentNode) qBox.removeChild(load);
+        qDiff.className='diff '+curDiff; qDiff.textContent=curDiff;
+        qText.textContent=''; qText.appendChild(h('span',{style:'color:var(--gold)', text:'Panel: '}));
+        qText.appendChild(h('span',{text:'"'+d.question+'"'}));
+        qText.dataset.q = d.question;
+        if (S.settings.hearThem && window.speechSynthesis){ try{ window.speechSynthesis.speak(new SpeechSynthesisUtterance(d.question)); }catch(e){} }
+      }).catch(function(){
+        if (load.parentNode) qBox.removeChild(load);
+        qText.textContent = 'What is the single biggest risk to your recommendation?';
+        qText.dataset.q = 'What is the single biggest risk to your recommendation?';
+      });
+    }
+    function submit(){
+      if (!ans.value.trim()) return;
+      try{ d2 && d2.stop(); }catch(e){}
+      qaList.push({ q:qText.dataset.q||'', a:ans.value.trim(), difficulty:curDiff });
+      ans.value=''; snd.disabled=true; drawRail();
+      if (qaList.length >= cfg.qa) finish(); else ask();
+    }
+    snd.addEventListener('click', submit);
+    ask();
+  }
+
+  function finish(){
+    S.caseResult = { cfg:cfg, caseId:c.id, title:c.title, sector:c.sector, task:c.task,
+      transcript:finalTranscript, qa:qaList, spokenSec: cfg.present - presLeft,
+      fillers: countFillers(finalTranscript), wpm: (cfg.present-presLeft) > 5 ? Math.round(words(finalTranscript)/((cfg.present-presLeft)/60)) : 0 };
+    go('caseReport');
+  }
+
+  showRead();
+  return root;
+}
+
+/* ---- case report ---- */
+function viewCaseReport(){
+  var replay = S.replay;
+  var r = replay ? (replay.caseData||{}) : S.caseResult;
+  var root = h('div',{cls:'mid', style:'padding-top:34px'});
+  root.appendChild(loadingPane('The panel is deliberating…','Scoring your structure, judgement and delivery.'));
+  var CKEYS = ['overall','structure','commercialJudgement','useOfData','recommendation','clarity','presence'];
+  var cstats = { answers:1, avgWords:words(r.transcript||''), avgSec:r.spokenSec||0,
+                 fillers:(r.fillers&&r.fillers.n)||0, totalWords:words(r.transcript||'') };
+  var caseCoach = (replay && replay.coach) || {};
+
+  if (!r.transcript || !words(r.transcript)){
+    clear(root);
+    root.appendChild(h('div',{cls:'card pad center'},[
+      h('p',{cls:'muted', style:'margin:0 0 14px', text:'No presentation was captured.'}),
+      btn('Back',{variant:'subtle', onclick:function(){ go('case'); }})
+    ]));
+    return root;
+  }
+
+  var caseDef = CASES.filter(function(x){return x.id===r.caseId;})[0] || {angles:[]};
+  (replay ? Promise.resolve(replay.report) : callJSON({
+    system:'You are an EY Strategy and Transactions partner debriefing a candidate after a case presentation. Be specific, honest and useful — reference what they actually said.\n'+
+      'Return ONLY a JSON object. Every score is a WHOLE NUMBER 0-100. Do not omit any key.\n'+
+      '{"scores":{"overall":72,"structure":70,"commercialJudgement":68,"useOfData":65,"recommendation":75,"clarity":74,"presence":70},'+
+      '"summary":"2-3 sentences on how it landed","strengths":["...","...","..."],"improvements":["...","...","..."],'+
+      '"missed":["angles they never addressed"],"betterVersion":"their whole presentation rewritten in THEIR OWN voice and vocabulary — same person, better structured, clearer recommendation, evidence up front. Do not make it sound like generic consulting boilerplate."}\n'+
+      'The panel expected these angles:\n'+(caseDef.angles||[]).map(function(a){return '- '+a;}).join('\n'),
+    schema:'{"scores":{"overall":int,"structure":int,"commercialJudgement":int,"useOfData":int,"recommendation":int,"clarity":int,"presence":int},"summary":string,"strengths":[3 strings],"improvements":[3 strings],"missed":[strings],"betterVersion":string}',
+    messages:[{role:'user', content:'CASE: '+r.title+'\nTASK: '+r.task+'\n\nTHEIR PRESENTATION:\n'+r.transcript+
+      '\n\nQ&A:\n'+(r.qa||[]).map(function(q){return 'Q: '+q.q+'\nA: '+q.a;}).join('\n\n')+
+      '\n\nMEASURED: '+Math.round((r.spokenSec||0)/60*10)/10+' min spoken of '+Math.round((r.cfg.present||0)/60)+' min allowed, '+r.wpm+' wpm, '+((r.fillers&&r.fillers.n)||0)+' fillers.'}],
+    maxTokens:3000
+  })).then(function(a){
+    a = a || {};
+    var norm = normalizeScores(a, cstats, CKEYS);
+    a.scores = norm.scores; a.estimated = norm.estimated;
+    if (!a.summary) a.summary = 'Here is how that landed.';
+    if (replay){ clear(root); try{ build(a); }catch(e){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Could not draw: '+e.message})])); } return; }
+    persistSession({date:Date.now(), mode:'case', who:r.title, overall:a.scores.overall, scores:a.scores,
+      report:a, caseData:r, coach:{}});
+    clear(root);
+    try{ build(a); }catch(e){ root.appendChild(h('div',{cls:'err'},[h('span',{text:'Report saved, but could not draw: '+e.message})])); }
+  }).catch(function(e){
+    var norm = normalizeScores(null, cstats, CKEYS);
+    if (!replay) persistSession({date:Date.now(), mode:'case', who:r.title, overall:norm.scores.overall,
+      scores:norm.scores, estimated:true, report:{scores:norm.scores, estimated:true, summary:'Estimated locally.'}, caseData:r, coach:{}});
+    clear(root);
+    root.appendChild(h('div',{cls:'warn', style:'margin-bottom:18px'},[
+      h('span',{text:(e&&e.message)||'The panel could not be reached, so scores are estimated locally.'}),
+      h('div',{cls:'row'},[ btn('Try again',{variant:'subtle', icon:'redo', onclick:function(){ go('caseReport'); }}),
+                            btn('Settings',{variant:'ghost', icon:'sliders', onclick:openSettings}) ])
+    ]));
+    build({ scores:norm.scores, estimated:true, summary:'Estimated from your pace, length and fillers.', strengths:[], improvements:[], missed:[] });
+  });
+
+  function build(a){
+    var s = a.scores;
+    root.appendChild(eyebrow('Case debrief · EY SAT','gold'));
+    root.appendChild(h('h2',{cls:'title', text:r.title}));
+    if (a.estimated) root.appendChild(h('div',{style:'display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);border:1px solid var(--goldDim);border-radius:20px;padding:3px 11px;margin-bottom:12px', text:'Estimated locally'}));
+    root.appendChild(h('p',{cls:'quote muted', style:'font-size:15px;margin:0 0 24px;line-height:1.55', text:a.summary}));
+
+    var top = h('div',{cls:'grid twocol', style:'grid-template-columns:minmax(0,220px) 1fr;align-items:start'});
+    var oc = h('div',{cls:'card center', style:'padding:24px 20px'});
+    oc.appendChild(eyebrow('Overall'));
+    oc.appendChild(h('div',{style:'font-family:var(--serif);font-size:64px;color:var(--gold);line-height:1;margin:10px 0 2px', text:String(clamp(s.overall))}));
+    oc.appendChild(h('div',{cls:'mono faint', style:'font-size:12px', text:'/ 100'}));
+    oc.appendChild(h('div',{style:'height:1px;background:var(--line);margin:18px 0'}));
+    var stats = h('div',{style:'display:flex;justify-content:space-around'});
+    [['Spoken',(Math.round((r.spokenSec||0)/60*10)/10)+'m'],['Pace',r.wpm||0],['Fillers',(r.fillers&&r.fillers.n)||0]].forEach(function(x){
+      stats.appendChild(h('div',{},[ h('div',{cls:'mono',style:'font-size:18px',text:String(x[1])}),
+                                     h('div',{cls:'faint',style:'font-size:10.5px;margin-top:2px',text:x[0]}) ]));
+    });
+    oc.appendChild(stats); top.appendChild(oc);
+    var bars = h('div',{cls:'card', style:'padding:20px 22px'});
+    [['Structure',s.structure,'var(--gold)'],['Commercial judgement',s.commercialJudgement,'var(--teal)'],
+     ['Use of the data',s.useOfData,'var(--gold)'],['Recommendation',s.recommendation,'var(--teal)'],
+     ['Clarity',s.clarity,'var(--gold)'],['Presence',s.presence,'var(--teal)']].forEach(function(x){
+      bars.appendChild(scoreBar(x[0],x[1],x[2]));
+    });
+    top.appendChild(bars); root.appendChild(top);
+
+    var two = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;margin-top:16px'});
+    two.appendChild(listCard('What worked', a.strengths, 'teal'));
+    two.appendChild(listCard('Where to sharpen', a.improvements, 'gold'));
+    root.appendChild(two);
+    if (a.missed && a.missed.length) root.appendChild(h('div',{style:'margin-top:14px'},[listCard('Angles you did not cover', a.missed, 'gold')]));
+
+    var fc = fillerChips(r.fillers && r.fillers.hits); if (fc) root.appendChild(fc);
+
+    if (a.betterVersion){
+      root.appendChild(h('h3',{cls:'sub', text:'Your presentation, sharper'}));
+      root.appendChild(h('p',{cls:'faint', style:'font-size:13.5px;margin:0 0 14px', text:'Same voice, same vocabulary — restructured the way the panel wanted to hear it.'}));
+      var rw = h('div',{cls:'rewrite'});
+      rw.appendChild(h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:10px'},[
+        h('span',{html:icon('wand',15,'var(--gold)')}), eyebrow('In your words, better ordered','gold') ]));
+      a.betterVersion.split('\n\n').forEach(function(p){
+        rw.appendChild(h('p',{style:'margin:0 0 12px;font-size:14.5px;line-height:1.65;font-family:var(--serif)', text:p}));
+      });
+      root.appendChild(rw);
+    }
+
+    root.appendChild(h('details',{style:'margin-top:16px'},[
+      h('summary',{cls:'faint', style:'cursor:pointer;font-size:13px', text:'What you actually said'}),
+      h('p',{cls:'muted', style:'font-size:13.5px;line-height:1.6;margin-top:10px', text:r.transcript})
+    ]));
+
+    if (r.qa && r.qa.length){
+      root.appendChild(h('h3',{cls:'sub', text:'Panel Q&A'}));
+      root.appendChild(h('p',{cls:'faint', style:'font-size:13.5px;margin:0 0 14px', text:'Open any answer for a stronger version in your own voice.'}));
+      var qs = h('div',{style:'display:flex;flex-direction:column;gap:12px'});
+      r.qa.forEach(function(q,i){
+        qs.appendChild(coachCard({ idx:i, question:q.q, answer:q.a, difficulty:q.difficulty,
+          key:'cq'+i, store:caseCoach, context:'an EY Strategy and Transactions case interview panel question' }));
+      });
+      root.appendChild(qs);
+    }
+
+    root.appendChild(h('div',{cls:'row', style:'margin-top:30px'},[
+      btn('Take questions',{icon:'mic', onclick:function(){
+        startDrill((r.qa||[]).map(function(q){return q.q;}), 'an EY Strategy and Transactions case interview about: '+r.title);
+      }}),
+      btn('Another case',{variant:'ghost', icon:'redo', onclick:function(){ go('case'); }}),
+      btn('See progress',{variant:'ghost', icon:'trend', onclick:function(){ go('progress'); }})
+    ]));
+  }
+  return root;
+}
+
 function providerDef(id){ return PROVIDERS.filter(function(p){return p.id===id;})[0] || PROVIDERS[0]; }
 
 // Builds the exact provider request. `wantJSON` turns on native JSON mode where
@@ -1015,7 +2127,7 @@ function hasConn(){ return !!(S.settings.apiKey||'').trim(); }
 
 /* ------------------------------ state / router ------------------------------ */
 var S = {
-  view:'home', profile:null, sessions:[], session:null, pres:null,
+  view:'home', profile:null, sessions:[], session:null, pres:null, banks:[], case:null, caseResult:null,
   settings:{ provider:'gemini', apiKey:'', model:'gemini-2.5-flash-lite', baseUrl:'https://openrouter.ai/api/v1', proxyUrl:'/api/chat', useProxy:false, hearThem:false, reactSecs:30, whisperKey:'', whisperModel:'whisper-large-v3-turbo' }
 };
 var cleanups = [];
@@ -1024,6 +2136,7 @@ function runCleanups(){ cleanups.forEach(function(f){ try{f();}catch(e){} }); cl
 function saveSettings(){ store.set('room:settings', S.settings); }
 function saveProfile(p){ S.profile = p; store.set('room:profile', p); }
 function saveSessions(x){ S.sessions = x; store.set('room:sessions', x); }
+function saveBanks(){ store.set('room:banks', S.banks); }
 // Appends one session. Re-reads storage first so a second tab can't clobber it,
 // and guards against double-saving the same report.
 function persistSession(rec){
@@ -1052,12 +2165,12 @@ function persistSession(rec){
   }catch(e){ /* never let a save error break the report */ }
 }
 
-function go(view){ runCleanups(); if (view!=='report' && view!=='presReport') S.replay = null; S.view = view; render(); window.scrollTo(0,0); }
+function go(view){ runCleanups(); if (view!=='report' && view!=='presReport' && view!=='caseReport') S.replay = null; S.view = view; render(); window.scrollTo(0,0); }
 // Re-open a saved report from Progress.
 function openArchived(rec){
   if (!rec.report){ return; }
   S.replay = rec;
-  runCleanups(); S.view = (rec.mode==='presentation') ? 'presReport' : 'report';
+  runCleanups(); S.view = rec.mode==='presentation' ? 'presReport' : (rec.mode==='case' ? 'caseReport' : 'report');
   render(); window.scrollTo(0,0);
 }
 
@@ -1076,6 +2189,9 @@ function render(){
   else if (v==='presReport') wrap.appendChild(viewPresReport());
   else if (v==='progress') wrap.appendChild(viewProgress());
   else if (v==='drill') wrap.appendChild(viewDrill());
+  else if (v==='case') wrap.appendChild(viewCase());
+  else if (v==='caseRoom') wrap.appendChild(viewCaseRoom());
+  else if (v==='caseReport') wrap.appendChild(viewCaseReport());
   app.appendChild(wrap);
 }
 
@@ -1274,7 +2390,8 @@ function viewHome(){
   hero.appendChild(h('div',{cls:'row', style:'margin-top:30px'},[
     btn('Start an interview',{icon:'play', onclick:function(){ S.session={mode:'interview'}; go('setup'); }}),
     btn('Try a workplace scenario',{variant:'ghost', icon:'msg', onclick:function(){ S.session={mode:'scenario'}; go('setup'); }}),
-    btn('Present to a room',{variant:'ghost', icon:'mic', onclick:function(){ go('pres'); }})
+    btn('Present to a room',{variant:'ghost', icon:'mic', onclick:function(){ go('pres'); }}),
+    btn('Take a case study',{variant:'ghost', icon:'case', onclick:function(){ go('case'); }})
   ]));
   root.appendChild(hero);
 
@@ -1298,6 +2415,7 @@ function viewHome(){
   var mods = h('div',{cls:'mods'});
   mods.appendChild(modCard('case','Interview simulator','Application to final panel. Adaptive follow-ups, real personalities, per-answer coaching.', function(){ S.session={mode:'interview'}; go('setup'); }));
   mods.appendChild(modCard('users','Workplace scenarios','Stand-ups, 1:1s, hard feedback, conflict, stakeholder updates, negotiation.', function(){ S.session={mode:'scenario'}; go('setup'); }));
+  mods.appendChild(modCard('case','Case study · EY SAT','Read a live FY2026 case against the clock, present your recommendation out loud, then face the panel.', function(){ go('case'); }));
   mods.appendChild(modCard('mic','Presentation studio','Present to a live audience of reactive faces, with pace, filler and voice-energy tracking, then Q&A.', function(){ go('pres'); }));
   mods.appendChild(modCard('trend','Progress & profile','Your communication profile and score trends, learned across every session.', function(){ go('progress'); },
     S.sessions.length ? S.sessions.length+' session'+(S.sessions.length>1?'s':'')+' recorded' : 'No sessions yet'));
@@ -1342,7 +2460,8 @@ function backBtn(to){
 /* ------------------------------ setup ------------------------------ */
 function viewSetup(){
   var mode = S.session.mode;
-  var st = { cv:'', jd:'', company:'', scenarioId:SCENARIOS[0].id, context:'', interviewerId:INTERVIEWERS[0].id, turns:8 };
+  var st = { cv:'', jd:'', company:'', scenarioId:SCENARIOS[0].id, context:'', interviewerId:INTERVIEWERS[0].id, turns:8,
+             mix: store.get('room:mix', 'even') };
   var root = h('div',{style:'padding-top:40px', cls:'narrow'});
   root.appendChild(backBtn('home'));
   root.appendChild(stepper(1));
@@ -1362,6 +2481,7 @@ function viewSetup(){
     body.appendChild(field('Your CV / resume','Paste the text. Skills, experience and projects here shape the questions.', cv));
     body.appendChild(field('Job description','What the role needs. Drives the topics and difficulty.', jd));
     body.appendChild(field('Company notes','Optional - mission, product, anything worth referencing.', co));
+    body.appendChild(bankCard(st));
     var who = h('div'); who.appendChild(eyebrow("Who's interviewing you"));
     var grid = h('div',{cls:'picks'});
     INTERVIEWERS.forEach(function(p){
@@ -1404,7 +2524,7 @@ function viewSetup(){
 
   var goBtn = btn('Enter the room',{icon:'door', onclick:function(){
     var cfg = mode==='interview'
-      ? {mode:mode, cv:st.cv, jd:st.jd, company:st.company, interviewerId:st.interviewerId, plannedTurns:st.turns, transcript:[]}
+      ? {mode:mode, cv:st.cv, jd:st.jd, company:st.company, interviewerId:st.interviewerId, plannedTurns:st.turns, transcript:[], mix:st.mix}
       : {mode:mode, scenarioId:st.scenarioId, context:st.context, plannedTurns:st.turns, transcript:[]};
     S.session = cfg; go('room');
   }});
@@ -1467,6 +2587,21 @@ function makeDictation(onText, onEnd){
 }
 
 /* ------------------------------ room ------------------------------ */
+function planBlock(sess){
+  if (!sess.plan || !sess.plan.length) return '';
+  var asked = sess.planIdx || 0;
+  var next = sess.plan[asked];
+  if (!next) return '\nYou have covered your planned questions. Wrap up or probe anything still thin.\n';
+  var done = sess.plan.slice(0, asked).map(function(x){ return '- '+x.q; }).join('\n');
+  return '\nYOUR INTERVIEW PLAN (you wrote these beforehand):\n'+
+    (done ? 'Already asked:\n'+done+'\n' : '')+
+    'NEXT PLANNED QUESTION (#'+(asked+1)+' of '+sess.plan.length+'):\n"'+next.q+'"\n'+
+    'Each turn, do ONE of these:\n'+
+    '  (a) ask the next planned question — put it in your own voice, but keep its substance intact; set "planned": true\n'+
+    '  (b) ask a natural follow-up to their last answer if it was vague, unsupported or interesting; set "planned": false\n'+
+    'Prefer (b) when their last answer clearly needs pushing, otherwise move the plan forward. Never announce that you have a plan.\n';
+}
+
 function buildSystem(sess, docCtx, closing){
   if (sess.mode === 'interview'){
     var p = INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0];
@@ -1479,8 +2614,9 @@ function buildSystem(sess, docCtx, closing){
       '- Sometimes say very little and let a silence invite them to keep talking.\n'+
       '- Move naturally across: motivation, real experience, a specific project, a challenge or failure, teamwork, and role-specific depth.\n'+
       (closing?'- This is the FINAL moment. Wrap up warmly, thank them, say you will be in touch. kind must be "closing".\n':'')+
+      planBlock(sess)+
       '\nOutput ONLY a JSON object, no other text:\n'+
-      '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing], "difficulty": one of [easy,medium,hard] - how demanding this question is to answer well}';
+      '{"speech": string, "mood": one of [warm,interested,impressed,neutral,thinking,skeptical,challenging,distracted], "action": short stage direction or "", "kind": one of [question,followup,challenge,reaction,silence,closing], "difficulty": one of [easy,medium,hard] - how demanding this question is to answer well, "planned": true if this is the next planned question, false if it is your own follow-up}';
   }
   var s = SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0];
   return 'You are '+s.counterpart+'. '+s.persona+'\n\n'+
@@ -1536,12 +2672,21 @@ function viewRoom(){
     clear(qrail);
     var qs = transcript.filter(function(t){ return t.by==='them' && ['question','followup','challenge'].indexOf(t.kind)>=0; });
     qrail.appendChild(h('div',{cls:'eyebrow', style:'margin-bottom:10px', text:'Questions asked'}));
+    if (sess.plan){
+      var used = sess.plan.filter(function(x){ return x.source==='bank'; }).length;
+      qrail.appendChild(h('div',{cls:'faint', style:'font-size:11px;margin:-4px 0 10px',
+        text:(sess.planIdx||0)+' of '+sess.plan.length+' planned · '+used+' from your bank'}));
+    }
     if (!qs.length){ qrail.appendChild(h('div',{cls:'faint', style:'font-size:12px', text:'They will appear here as they come.'})); return; }
     qs.forEach(function(t,i){
       var d = t.difficulty || 'medium';
+      var tags = h('div',{style:'display:flex;gap:5px;flex-wrap:wrap;align-items:center'});
+      tags.appendChild(h('span',{cls:'diff '+d, text:d}));
+      if (t.source === 'bank') tags.appendChild(h('span',{cls:'src', text:'my bank'}));
+      else if (t.source === 'followup') tags.appendChild(h('span',{cls:'src fu', text:'follow-up'}));
       qrail.appendChild(h('div',{cls:'qlog'},[
         h('div',{cls:'n', text:String(i+1).padStart(2,'0')}),
-        h('div',{style:'min-width:0'},[ h('div',{cls:'t', text:t.text}), h('span',{cls:'diff '+d, text:d}) ])
+        h('div',{style:'min-width:0'},[ h('div',{cls:'t', text:t.text}), tags ])
       ]));
     });
     qrail.scrollTop = qrail.scrollHeight;
@@ -1658,8 +2803,14 @@ function viewRoom(){
       // If the model gave prose instead of JSON, use the prose as speech rather than a canned line.
       if (typeof t === 'string') t = { speech:t, mood:'neutral', kind:'question' };
       if (!t.speech) throw new Error('The model returned no reply. Try another model in Settings.');
+      var planned = !!t.planned && sess.plan && sess.plan[sess.planIdx||0];
       var entry = {by:'them', text:t.speech, mood:t.mood||'neutral', action:t.action||'', kind:t.kind||'question',
-        difficulty: ['easy','medium','hard'].indexOf(t.difficulty)>=0 ? t.difficulty : 'medium'};
+        difficulty: ['easy','medium','hard'].indexOf(t.difficulty)>=0 ? t.difficulty : 'medium',
+        source: planned ? (sess.plan[sess.planIdx||0].source || 'tailored') : (sess.plan ? 'followup' : 'tailored')};
+      if (planned){
+        entry.difficulty = sess.plan[sess.planIdx||0].difficulty || entry.difficulty;
+        sess.planIdx = (sess.planIdx||0) + 1;
+      }
       transcript.push(entry);
       setThinking(false);
       moodTxt.textContent = moodOf(entry.mood).l.toLowerCase();
@@ -1710,7 +2861,11 @@ function viewRoom(){
       docCtx = 'Candidate: '+(b.candidateName||'the candidate')+'. Role: '+(b.role||'the role')+'.\n'+
         'Skills: '+((b.skills||[]).join(', '))+'.\nFocus areas: '+((b.focusAreas||[]).join(', '))+'.\n'+
         'Notable projects: '+((b.notableProjects||[]).join('; '))+'.\nWatch for: '+((b.possibleWeakSpots||[]).join('; '))+'.';
-      advance(false);
+      return buildPlan(sess, docCtx).then(function(plan){
+        if (plan){ sess.plan = plan; sess.planIdx = 0; }
+        drawQRail();
+        advance(false);
+      });
     }).catch(function(e){
       // Brief is a nice-to-have — if it fails, still start the interview with the raw docs.
       if (e.message === 'no_key'){ setThinking(false); showErr('Add a model key in Settings to begin.', function(){ go('room'); }); return; }
@@ -2591,7 +3746,7 @@ function viewProgress(){
     var list = h('div',{style:'margin-top:22px;display:flex;flex-direction:column'});
     list.appendChild(h('div',{cls:'faint', style:'font-size:12px;margin-bottom:6px', text:'Click a session to reopen its full report.'}));
     S.sessions.slice().reverse().forEach(function(s,i){
-      var color = s.mode==='interview' ? 'var(--gold)' : (s.mode==='presentation' ? 'var(--green)' : 'var(--teal)');
+      var color = s.mode==='interview' ? 'var(--gold)' : (s.mode==='presentation' ? 'var(--green)' : (s.mode==='case' ? 'var(--rose)' : 'var(--teal)'));
       var openable = !!s.report;
       var row = h('div',{cls: openable ? 'archrow' : '', title: openable ? 'Open this report' : 'Report not stored for this session',
         style:'display:flex;align-items:center;justify-content:space-between'+(i?';border-top:1px solid var(--lineSoft)':'')},[
@@ -2633,6 +3788,21 @@ function profList(label, items, color){
 (function boot(){
   S.profile = store.get('room:profile', null);
   S.sessions = store.get('room:sessions', []);
+  S.banks = store.get('room:banks', []) || [];
+  // Optional: drop a questions.json next to index.html and it auto-loads.
+  // Same-origin, so this is not a CDN request and won't be blocked.
+  if (!S.banks.some(function(b){ return b.src === 'questions.json'; })){
+    fetch('questions.json').then(function(r){ return r.ok ? r.json() : null; }).then(function(j){
+      if (!j) return;
+      var qs = Array.isArray(j) ? j : (j.questions || []);
+      var parsed = qs.map(function(x){ return typeof x === 'string' ? {q:x, cat:''} : {q:x.q||x.text||'', cat:x.cat||x.category||''}; })
+                     .filter(function(x){ return x.q; });
+      if (!parsed.length) return;
+      S.banks.push({ name: j.name || 'questions.json', src:'questions.json', questions:parsed, enabled:true, added:Date.now() });
+      saveBanks();
+      if (S.view === 'setup') render();
+    }).catch(function(){});
+  }
   var saved = store.get('room:settings', null);
   if (saved) S.settings = Object.assign(S.settings, saved);
   if (window.speechSynthesis) { try { window.speechSynthesis.getVoices(); } catch(e){} }
