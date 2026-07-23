@@ -2769,7 +2769,7 @@ function backBtn(to){
 function viewSetup(){
   var mode = S.session.mode;
   var st = { cv:'', jd:'', company:'', scenarioId:SCENARIOS[0].id, context:'', interviewerId:INTERVIEWERS[0].id, turns:8,
-             mix: store.get('room:mix', 'even'), focus:'general', mins:0 };
+             mix: store.get('room:mix', 'even'), focus:'general', mins:0, maxFU:1 };
   var root = h('div',{style:'padding-top:40px', cls:'narrow'});
   root.appendChild(backBtn('home'));
   root.appendChild(stepper(1));
@@ -2847,6 +2847,7 @@ function viewSetup(){
     var lrow = h('div',{cls:'row', style:'margin-top:12px'});
     if (behav){
       if (!BEHAV_TIMES.some(function(b){ return b.turns===st.turns; })) st.turns = 20;
+      if (st._fuTouched !== true) st.maxFU = 0;   // behavioural defaults to strict
       BEHAV_TIMES.forEach(function(b){
         lrow.appendChild(h('button',{cls:'chip '+(b.turns===st.turns?'on':''), onclick:function(){
           st.turns = b.turns; st.mins = b.min;
@@ -2867,13 +2868,26 @@ function viewSetup(){
       });
     }
     lenWrap.appendChild(lrow);
+
+    lenWrap.appendChild(h('div',{cls:'mono faint', style:'font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;margin:20px 0 8px', text:'Follow-ups'}));
+    var furow = h('div',{cls:'row', style:'gap:6px'});
+    [{n:0,l:'None — question by question'},{n:1,l:'One probe per question'},{n:2,l:'Up to two probes'}].forEach(function(o){
+      furow.appendChild(h('button',{cls:'pill '+(st.maxFU===o.n?'on':''), onclick:function(){
+        st.maxFU = o.n; st._fuTouched = true;
+        Array.prototype.forEach.call(furow.children,function(c){c.className='pill';});
+        this.className='pill on';
+      }}, o.l));
+    });
+    lenWrap.appendChild(furow);
+    lenWrap.appendChild(h('div',{cls:'faint', style:'font-size:11.5px;margin-top:8px;line-height:1.5',
+      text:'"None" moves to the next planned question after every answer. Higher settings let the interviewer dig before moving on — useful, but it makes the interview longer than the time above.'}));
   }
   drawLength();
 
   var goBtn = btn('Enter the room',{icon:'door', onclick:function(){
     var cfg = mode==='interview'
       ? {mode:mode, cv:st.cv, jd:st.jd, company:st.company, interviewerId:st.interviewerId, plannedTurns:st.turns, transcript:[], mix:st.mix,
-         behavioural: st.focus==='behavioural', mins: st.mins}
+         behavioural: st.focus==='behavioural', mins: st.mins, maxFollowups: st.maxFU, fuStreak: 99}
       : {mode:mode, scenarioId:st.scenarioId, context:st.context, plannedTurns:st.turns, transcript:[]};
     S.session = cfg; go('room');
   }});
@@ -2940,15 +2954,27 @@ function planBlock(sess){
   if (!sess.plan || !sess.plan.length) return '';
   var asked = sess.planIdx || 0;
   var next = sess.plan[asked];
-  if (!next) return '\nYou have covered your planned questions. Wrap up or probe anything still thin.\n';
+  if (!next) return '\nYou have covered your planned questions. Wrap up now.\n';
+  var maxFU = (sess.maxFollowups === undefined) ? 1 : sess.maxFollowups;
+  var streak = sess.fuStreak || 0;
+  var mustAsk = streak >= maxFU;   // the app decides, not the model
   var done = sess.plan.slice(0, asked).map(function(x){ return '- '+x.q; }).join('\n');
-  return '\nYOUR INTERVIEW PLAN (you wrote these beforehand):\n'+
+  var head = '\nYOUR INTERVIEW PLAN (you wrote these beforehand):\n'+
     (done ? 'Already asked:\n'+done+'\n' : '')+
-    'NEXT PLANNED QUESTION (#'+(asked+1)+' of '+sess.plan.length+'):\n"'+next.q+'"\n'+
-    'Each turn, do ONE of these:\n'+
-    '  (a) ask the next planned question — put it in your own voice, but keep its substance intact; set "planned": true\n'+
-    '  (b) ask a natural follow-up to their last answer if it was vague, unsupported or interesting; set "planned": false\n'+
-    'Prefer (b) when their last answer clearly needs pushing, otherwise move the plan forward. Never announce that you have a plan.\n';
+    'NEXT PLANNED QUESTION (#'+(asked+1)+' of '+sess.plan.length+'):\n"'+next.q+'"\n';
+  if (mustAsk){
+    return head +
+      'YOU MUST ASK THAT QUESTION NOW, THIS TURN. Do not ask a follow-up. Do not ask anything else.\n'+
+      'You may open with a SHORT acknowledgement of their last answer (at most one clause) before asking it, but the question itself must be asked now.\n'+
+      'Put it in your own voice but keep its substance intact. Set "planned": true.\n'+
+      'Never announce that you have a plan.\n';
+  }
+  return head +
+    'This turn, do ONE of these:\n'+
+    '  (a) ask the next planned question — your own voice, substance intact; set "planned": true\n'+
+    '  (b) ask ONE short follow-up, but ONLY if their last answer left out something essential; set "planned": false\n'+
+    'Default to (a). Choose (b) only if the gap is genuinely important — you get at most '+maxFU+' follow-up before you must move on.\n'+
+    'Never announce that you have a plan.\n';
 }
 
 function buildSystem(sess, docCtx, closing){
@@ -3041,6 +3067,7 @@ function viewRoom(){
       tags.appendChild(h('span',{cls:'diff '+d, text:d}));
       if (t.source === 'bank') tags.appendChild(h('span',{cls:'src', text:'my bank'}));
       else if (t.source === 'followup') tags.appendChild(h('span',{cls:'src fu', text:'follow-up'}));
+      if (t.competency) tags.appendChild(h('span',{cls:'src', style:'color:var(--faint);border-color:var(--line)', text:t.competency.slice(0,28)}));
       qrail.appendChild(h('div',{cls:'qlog'},[
         h('div',{cls:'n', text:String(i+1).padStart(2,'0')}),
         h('div',{style:'min-width:0'},[ h('div',{cls:'t', text:t.text}), tags ])
@@ -3121,7 +3148,9 @@ function viewRoom(){
     if (on){ moodTxt.textContent='thinking...'; if(thinkEl.parentNode!==log) log.appendChild(thinkEl); }
     else if (thinkEl.parentNode===log) log.removeChild(thinkEl);
     if (!on){ startedAt = Date.now(); seconds = 0; updTimer(); }
-    counter.textContent = Math.min(qCount(), sess.plannedTurns)+' / '+sess.plannedTurns+' questions';
+    counter.textContent = sess.plan
+      ? Math.min(sess.planIdx||0, sess.plan.length)+' / '+sess.plan.length+' questions'
+      : Math.min(qCount(), sess.plannedTurns)+' / '+sess.plannedTurns+' questions';
     log.scrollTop = log.scrollHeight;
   }
   function addBubble(entry){
@@ -3160,13 +3189,26 @@ function viewRoom(){
       // If the model gave prose instead of JSON, use the prose as speech rather than a canned line.
       if (typeof t === 'string') t = { speech:t, mood:'neutral', kind:'question' };
       if (!t.speech) throw new Error('The model returned no reply. Try another model in Settings.');
-      var planned = !!t.planned && sess.plan && sess.plan[sess.planIdx||0];
+
+      // Progression is the APP's job, not the model's. If we told it this turn
+      // had to be the planned question, we count it as such no matter how it
+      // labelled itself — otherwise a mislabelled turn stalls the interview.
+      var idx = sess.planIdx || 0;
+      var hasPlan = !!(sess.plan && sess.plan[idx]);
+      var maxFU = (sess.maxFollowups === undefined) ? 1 : sess.maxFollowups;
+      var wasForced = hasPlan && (sess.fuStreak || 0) >= maxFU;
+      var planned = hasPlan && (wasForced || !!t.planned);
+
       var entry = {by:'them', text:t.speech, mood:t.mood||'neutral', action:t.action||'', kind:t.kind||'question',
         difficulty: ['easy','medium','hard'].indexOf(t.difficulty)>=0 ? t.difficulty : 'medium',
-        source: planned ? (sess.plan[sess.planIdx||0].source || 'tailored') : (sess.plan ? 'followup' : 'tailored')};
+        source: planned ? (sess.plan[idx].source || 'tailored') : (sess.plan ? 'followup' : 'tailored')};
       if (planned){
-        entry.difficulty = sess.plan[sess.planIdx||0].difficulty || entry.difficulty;
-        sess.planIdx = (sess.planIdx||0) + 1;
+        entry.difficulty = sess.plan[idx].difficulty || entry.difficulty;
+        entry.competency = sess.plan[idx].competency || '';
+        sess.planIdx = idx + 1;
+        sess.fuStreak = 0;
+      } else if (hasPlan){
+        sess.fuStreak = (sess.fuStreak || 0) + 1;
       }
       transcript.push(entry);
       setThinking(false);
@@ -3194,7 +3236,10 @@ function viewRoom(){
     var mine = {by:'me', text:val, seconds:seconds, words:words(val), fillers:countFillers(val)};
     transcript.push(mine); addBubble(mine);
     ta.value=''; sendBtn.disabled=true; updTimer();
-    advance(qCount()+1 > sess.plannedTurns);
+    // With a plan, the interview ends when the plan is done — not on a raw count,
+    // which follow-ups would otherwise inflate.
+    var done = sess.plan ? ((sess.planIdx||0) >= sess.plan.length) : (qCount()+1 > sess.plannedTurns);
+    advance(done);
   }
   function finish(){
     if (ended) return;
