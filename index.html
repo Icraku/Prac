@@ -349,6 +349,47 @@ var SCENARIOS = [
    persona:'You are Grace, a hiring manager who likes the candidate but has a budget. You probe their reasoning, apply gentle pressure, and respect a well-justified, non-defensive case.'}
 ];
 var LENGTHS = [{id:'quick',label:'Quick',turns:5,note:'~5 questions'},{id:'standard',label:'Standard',turns:8,note:'~8 questions'},{id:'deep',label:'Deep',turns:12,note:'~12 questions'}];
+// Behavioural-only interviews. A real STAR answer runs 1.5-2 minutes, so the
+// question count is derived from the time rather than picked separately.
+var BEHAV_TIMES = [
+  {min:10, turns:7,  note:'~7 questions'},
+  {min:15, turns:10, note:'~10 questions'},
+  {min:20, turns:13, note:'~13 questions'},
+  {min:30, turns:20, note:'~20 questions'},
+  {min:40, turns:26, note:'~26 questions'}
+];
+// The competencies EY SAT actually probes. Used to force variety so you don't
+// get five versions of "tell me about a conflict".
+var BEHAV_COMPETENCIES = [
+  'Motivation and why this firm / this service line',
+  'Analytical problem solving under ambiguity',
+  'Handling large or messy datasets and drawing a conclusion',
+  'Working to a deadline under pressure',
+  'Teamwork and collaborating across a mixed team',
+  'Influencing or persuading without authority',
+  'Managing a difficult stakeholder or client',
+  'Leadership and taking ownership',
+  'Conflict and disagreement',
+  'Failure, mistakes and what changed afterwards',
+  'Adaptability and responding to sudden change',
+  'Attention to detail and quality control',
+  'Commercial awareness and understanding the client business',
+  'Ethics, professional scepticism and pushing back',
+  'Communicating complex analysis to a non-technical audience',
+  'Prioritisation across competing demands',
+  'Learning something difficult quickly',
+  'Receiving and acting on critical feedback',
+  'Initiative and going beyond what was asked',
+  'Resilience over a long or draining engagement',
+  'Negotiating or saying no to a request',
+  'Working across cultures, offices or time zones',
+  'Mentoring, coaching or bringing someone up to speed',
+  'Handling confidential or sensitive information',
+  'Recovering a project that was going wrong',
+  'Building a relationship from a cold start',
+  'Challenging your own earlier conclusion',
+  'Delivering with a team you did not choose'
+];
 var MOODS = {
   warm:{l:'Warm',c:'#E0A75E'}, interested:{l:'Interested',c:'#6FB4A6'}, impressed:{l:'Impressed',c:'#84C29B'},
   neutral:{l:'Listening',c:'#8895A2'}, thinking:{l:'Thinking',c:'#9AA7B2'}, skeptical:{l:'Skeptical',c:'#D98A7E'},
@@ -795,6 +836,53 @@ function startDrill(questions, context){
 
 /* Reusable expandable answer card with "say this instead" coaching.
    Caches results into `store` so re-opening an archived report is free.  */
+/* ---- STAR ------------------------------------------------------------
+   Behavioural answers are scored against Situation / Task / Action / Result.
+   The rubric is strict on the two letters candidates habitually skip: TASK
+   (what was actually yours to do) and RESULT (a number, not "it went well"). */
+var STAR_RUBRIC =
+  'Score the answer against the STAR method. Be strict and specific:\n'+
+  '- SITUATION: is there real context — where, when, what was at stake? Vague scene-setting scores low. Rambling scene-setting also scores low: it should be brief.\n'+
+  '- TASK: is it clear what THEIR responsibility was, as distinct from the team\'s? Candidates skip this constantly. "We were asked to..." without "I owned..." scores low.\n'+
+  '- ACTION: specific things THEY personally did, in sequence, with reasoning. "We decided" instead of "I did" scores low. This should be the longest part of the answer.\n'+
+  '- RESULT: a concrete outcome, ideally quantified, plus what they learned or what changed afterwards. "It went well" scores very low. No result at all scores near zero.\n'+
+  'Judge only what they actually said. Do not invent detail on their behalf.\n';
+
+var STAR_KEYS = [['situation','Situation'],['task','Task'],['action','Action'],['result','Result']];
+
+function starBlock(star, verdict){
+  var wrap = h('div',{cls:'card', style:'padding:15px 17px;margin-bottom:14px;background:var(--bg)'});
+  wrap.appendChild(h('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px'},[
+    eyebrow('STAR breakdown','gold'),
+    h('span',{cls:'mono faint', style:'font-size:11px', text:'avg '+starAvg(star)})
+  ]));
+  STAR_KEYS.forEach(function(k){
+    var part = star[k[0]] || {};
+    var v = clamp(Number(part.score)||0);
+    var col = v>=70 ? 'var(--green)' : (v>=45 ? 'var(--gold)' : 'var(--rose)');
+    var row = h('div',{style:'display:flex;gap:11px;align-items:flex-start;padding:7px 0'});
+    row.appendChild(h('div',{cls:'mono', style:'font-size:15px;font-weight:600;color:'+col+';flex-shrink:0;width:16px', text:k[1][0]}));
+    var mid = h('div',{style:'flex:1;min-width:0'});
+    mid.appendChild(h('div',{style:'display:flex;justify-content:space-between;gap:8px;margin-bottom:4px'},[
+      h('span',{style:'font-size:12.5px', text:k[1]}),
+      h('span',{cls:'mono', style:'font-size:11px;color:'+col, text:String(v)})
+    ]));
+    var fill = h('div',{cls:'fill'}); fill.style.width='0%'; fill.style.background=col;
+    mid.appendChild(h('div',{cls:'track'},[fill]));
+    setTimeout(function(){ fill.style.width = v+'%'; }, 60);
+    if (part.note) mid.appendChild(h('div',{cls:'muted', style:'font-size:12.3px;line-height:1.45;margin-top:5px', text:part.note}));
+    row.appendChild(mid);
+    wrap.appendChild(row);
+  });
+  if (verdict) wrap.appendChild(h('div',{cls:'faint', style:'font-size:12.5px;line-height:1.5;border-top:1px solid var(--lineSoft);padding-top:9px;margin-top:8px', text:verdict}));
+  return wrap;
+}
+function starAvg(star){
+  var n=0, t=0;
+  STAR_KEYS.forEach(function(k){ var v=Number((star[k[0]]||{}).score); if(isFinite(v)){ t+=v; n++; } });
+  return n ? Math.round(t/n) : 0;
+}
+
 function coachCard(o){
   var card = h('div',{cls:'acard'});
   var open = false;
@@ -831,9 +919,12 @@ function coachCard(o){
       system:"You are this person's private communication coach. Help them say what THEY would say - with more structure, confidence and evidence - WITHOUT changing their personality, vocabulary or voice. It must still sound unmistakably like them, never polished AI copy.\n"+
         ((S.profile&&S.profile.voiceSummary)?('How they naturally talk: '+S.profile.voiceSummary+'\n'):'')+
         'Setting: '+(o.context||'a workplace conversation')+'\n'+
-        'Return ONLY JSON:\n{"worked":"1 sentence","improve":"1 sentence","why":"1 sentence","improved":"their answer rewritten in their own voice","whyBetter":"1-2 sentences"}',
+        (o.star ? STAR_RUBRIC : '')+
+        'Return ONLY JSON:\n{"worked":"1 sentence","improve":"1 sentence","why":"1 sentence",'+
+        (o.star ? '"star":{"situation":{"score":0-100,"note":"what they gave, or what was missing"},"task":{"score":0-100,"note":"..."},"action":{"score":0-100,"note":"..."},"result":{"score":0-100,"note":"..."}},"starVerdict":"1 sentence on which letter let them down most",' : '')+
+        '"improved":"their answer rewritten in their own voice'+(o.star?', following STAR properly — but still THEIR words':'')+'","whyBetter":"1-2 sentences"}',
       messages:[{role:'user', content:'QUESTION: '+o.question+'\n\nTHEIR ANSWER: '+o.answer}],
-      maxTokens:900
+      maxTokens:o.star ? 1400 : 900
     }).then(function(d){
       if(!d || !d.improved) throw new Error('The model did not return a rewrite. Try again, or switch model in Settings.');
       body.dataset.loaded='1';
@@ -849,6 +940,7 @@ function coachCard(o){
   }
   function draw(d){
     clear(body);
+    if (d.star) body.appendChild(starBlock(d.star, d.starVerdict));
     var g = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;gap:12px'});
     g.appendChild(mini('Worked', d.worked, 'teal'));
     g.appendChild(mini('To improve', d.improve, 'gold'));
@@ -1032,30 +1124,50 @@ var MIX = [
 ];
 
 // One call: weave shortlisted bank questions with CV-tailored ones into a plan.
+// In behavioural mode a plan is ALWAYS built (even with no bank) because the
+// whole point is guaranteed competency spread across ~20 questions.
 function buildPlan(sess, docCtx){
+  var behav = !!sess.behavioural;
   var mixDef = MIX.filter(function(m){ return m.id === (sess.mix||'even'); })[0] || MIX[2];
-  if (mixDef.bank === 0) return Promise.resolve(null);
-  var short = shortlistBank(sess.cv, sess.jd, 45);
-  if (!short.length) return Promise.resolve(null);
+  var short = shortlistBank(sess.cv, sess.jd, behav ? 60 : 45);
+  if (!behav){
+    if (mixDef.bank === 0) return Promise.resolve(null);
+    if (!short.length) return Promise.resolve(null);
+  }
   var want = sess.plannedTurns || 8;
-  var nBank = Math.round(want * mixDef.bank);
-  return callJSON({
-    system:'You plan a job interview. You are given a candidate brief and a numbered bank of the interviewer\'s own questions.\n'+
+  var nBank = short.length ? Math.round(want * mixDef.bank) : 0;
+
+  var sys = behav
+    ? 'You plan a BEHAVIOURAL (competency) interview for a Big-4 Strategy and Transactions role.\n'+
+      'Build an ordered plan of exactly '+want+' questions.\n'+
+      '- EVERY question must ask for a specific past example ("Tell me about a time...", "Give me an example of...", "Describe a situation where...").\n'+
+      '- No hypotheticals, no opinions, no abstract strengths questions.\n'+
+      '- Each question must target a DIFFERENT competency from this list. Use '+Math.min(want, BEHAV_COMPETENCIES.length)+' different ones — never repeat a competency:\n'+
+      BEHAV_COMPETENCIES.map(function(c,i){ return '  '+(i+1)+'. '+c; }).join('\n')+'\n'+
+      (short.length ? '- Use EXACTLY '+nBank+' questions from the candidate\'s own bank below (quote near-verbatim, light adaptation allowed). The rest must be new questions tailored to their CV.\n' : '- Tailor every question to the specifics of their CV — reference their actual projects and sectors.\n')+
+      '- Order easiest to hardest: warm-up competencies first, failure/conflict/ethics later.\n'+
+      '- Return the competency you assigned to each question.\n'+
+      'Return ONLY JSON: {"plan":[{"q":"the question","source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard","competency":"which competency this targets"}]}'
+    : 'You plan a job interview. You are given a candidate brief and a numbered bank of the interviewer\'s own questions.\n'+
       'Build an ordered plan of exactly '+want+' questions:\n'+
       '- Use EXACTLY '+nBank+' questions taken from the bank. Pick the ones most relevant to this candidate and role. Quote them near-verbatim; you may lightly adapt wording to name their actual experience.\n'+
       '- The remaining '+(want-nBank)+' must be NEW questions tailored to the CV and job description.\n'+
       '- Order them so difficulty rises: warm-up first, hardest near the end.\n'+
       '- Do not repeat topics.\n'+
-      'Return ONLY JSON: {"plan":[{"q":"the question text","source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard"}]}',
-    schema:'{"plan":[{"q":string,"source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard"}]}',
+      'Return ONLY JSON: {"plan":[{"q":"the question text","source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard"}]}';
+
+  return callJSON({
+    system: sys,
+    schema:'{"plan":[{"q":string,"source":"bank"|"tailored","difficulty":"easy"|"medium"|"hard","competency":string}]}',
     messages:[{ role:'user', content:
-      'CANDIDATE BRIEF:\n'+docCtx+'\n\nQUESTION BANK (choose from these):\n'+
-      short.map(function(x,i){ return (i+1)+'. '+(x.cat?'['+x.cat+'] ':'')+x.q; }).join('\n') }],
-    maxTokens:2200
+      'CANDIDATE BRIEF:\n'+docCtx+
+      (short.length ? '\n\nQUESTION BANK (choose from these):\n'+
+        short.map(function(x,i){ return (i+1)+'. '+(x.cat?'['+x.cat+'] ':'')+x.q; }).join('\n') : '') }],
+    maxTokens: behav ? 3200 : 2200
   }).then(function(d){
     var plan = (d && d.plan) || [];
     return plan.length ? plan : null;
-  }).catch(function(){ return null; }); // bank is an enhancement — never block the interview
+  }).catch(function(){ return null; }); // never block the interview
 }
 
 /* Import / manage your own question banks, and choose how heavily they're used. */
@@ -1965,6 +2077,8 @@ function viewCaseReport(){
       h('p',{cls:'muted', style:'font-size:13.5px;line-height:1.6;margin-top:10px', text:r.transcript})
     ]));
 
+    root.appendChild(methodCard(r, caseDef, caseCoach));
+
     if (r.qa && r.qa.length){
       root.appendChild(h('h3',{cls:'sub', text:'Panel Q&A'}));
       root.appendChild(h('p',{cls:'faint', style:'font-size:13.5px;margin:0 0 14px', text:'Open any answer for a stronger version in your own voice.'}));
@@ -1985,6 +2099,199 @@ function viewCaseReport(){
     ]));
   }
   return root;
+}
+
+
+/* ---- how you should have run it: local time plan + AI method ----
+   The clock split is computed here (free, exact to the timings chosen).
+   Only the case-specific method costs an API call, and it caches.        */
+function timePlan(readSec, presSec){
+  function seg(total, parts){
+    var out = [], acc = 0;
+    parts.forEach(function(p, i){
+      var len = (i === parts.length-1) ? (total - acc) : Math.round(total * p.f);
+      out.push({ from:acc, to:acc+len, len:len, title:p.t, what:p.w });
+      acc += len;
+    });
+    return out;
+  }
+  var plan = { read:[], present:[] };
+  if (readSec > 0){
+    plan.read = seg(readSec, [
+      {f:0.08, t:'Read the ask first', w:'Go to the task before the passage. Everything you read afterwards gets filtered by what you are actually being asked to decide.'},
+      {f:0.30, t:'First pass of the passage', w:'One read, no notes. You are looking for three things only: what decision is on the table, who has to live with it, and what makes it hard.'},
+      {f:0.20, t:'Interrogate the exhibit', w:'Numbers are in the case because they matter. For each one ask: what does this rule in, what does it rule out. Circle the two that carry your answer.'},
+      {f:0.30, t:'Build the spine', w:'Write your recommendation as one sentence, then the two or three reasons underneath it, then the evidence under each. If a fact does not sit under a reason, it does not get said.'},
+      {f:0.12, t:'Rehearse the first and last line', w:'Say your opening sentence and your closing sentence out loud. These are the two the panel remembers.'}
+    ]);
+  }
+  plan.present = seg(presSec, [
+    {f:0.12, t:'Recommendation, immediately', w:'Answer the question in your first sentence. No background, no "I looked at three things". The panel already knows the case.'},
+    {f:0.08, t:'Signpost', w:'"Three reasons, then the risks." Now they know when you are done and can follow you.'},
+    {f:0.50, t:'The body', w:'Two or three pillars. Each one: claim, then the number that proves it, then the so-what. Never a number without a so-what.'},
+    {f:0.18, t:'Risks and what would change your mind', w:'Name the strongest argument against you and answer it before they raise it. This is where credibility is won.'},
+    {f:0.12, t:'Close on the ask', w:'Restate the recommendation and say what you would do first thing Monday. Stop talking.'}
+  ]);
+  return plan;
+}
+
+function methodCard(r, caseDef, store){
+  var card = h('div');
+  card.appendChild(h('h3',{cls:'sub', text:'How you should have run this'}));
+  card.appendChild(h('p',{cls:'faint', style:'font-size:13.5px;margin:0 0 16px;line-height:1.5',
+    text:'The approach a strong candidate would have taken on this case, on the clock you chose — from opening the passage to the moment before the panel speaks.'}));
+
+  // ---- local, free: the clock
+  var plan = timePlan(r.cfg.read||0, r.cfg.present||300);
+  var clockCard = h('div',{cls:'card', style:'padding:20px 22px'});
+  clockCard.appendChild(eyebrow('Your clock','gold'));
+  clockCard.appendChild(h('div',{cls:'faint', style:'font-size:12px;margin:5px 0 14px',
+    text: (r.cfg.read ? Math.round(r.cfg.read/60)+' min reading' : 'untimed reading')+' · '+Math.round((r.cfg.present||0)/60)+' min presenting'}));
+
+  function phaseList(title, segs, color){
+    if (!segs.length) return null;
+    var w = h('div',{style:'margin-bottom:6px'});
+    w.appendChild(h('div',{cls:'mono', style:'font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--'+color+');margin-bottom:9px', text:title}));
+    segs.forEach(function(s){
+      w.appendChild(h('div',{style:'display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--lineSoft)'},[
+        h('div',{cls:'mono', style:'font-size:11px;color:var(--faint);flex-shrink:0;width:86px;padding-top:2px',
+          text: mmss(s.from)+'–'+mmss(s.to)}),
+        h('div',{style:'min-width:0'},[
+          h('div',{style:'font-size:13.5px;margin-bottom:3px', text:s.title}),
+          h('div',{cls:'muted', style:'font-size:12.5px;line-height:1.5', text:s.what})
+        ])
+      ]));
+    });
+    return w;
+  }
+  if (r.cfg.read) clockCard.appendChild(phaseList('Reading — '+Math.round(r.cfg.read/60)+' min', plan.read, 'teal'));
+  else clockCard.appendChild(h('div',{cls:'muted', style:'font-size:13px;line-height:1.5;margin-bottom:12px',
+    text:'You read untimed. In a real EY SAT case you would get 10–15 minutes with the passage and exhibit — practise against that clock next time, because the constraint is the point.'}));
+  clockCard.appendChild(phaseList('Presenting — '+Math.round((r.cfg.present||0)/60)+' min', plan.present, 'gold'));
+  card.appendChild(clockCard);
+
+  // ---- AI: the case-specific method
+  var box = h('div',{style:'margin-top:14px'});
+  card.appendChild(box);
+
+  var cached = store && store['__method'];
+  if (cached){ draw(cached); }
+  else {
+    var loadBtn = btn('Show the model approach for this case',{variant:'subtle', icon:'wand', onclick:load});
+    function load(){
+      clear(box);
+      box.appendChild(h('div',{cls:'card pad'},[h('div',{cls:'faint', style:'display:flex;align-items:center;gap:9px;font-size:13.5px',
+        html: icon('load',15,'currentColor','spin')+'<span style="margin-left:4px">Working through the case the way a strong candidate would…</span>'})]));
+      callJSON({
+        system:'You are an EY Strategy and Transactions partner writing the model approach to a case, for a candidate who has just presented it. '+
+          'Be concrete and case-specific — never generic consulting advice. Refer to the actual companies, numbers and tensions in this case.\n'+
+          'They had '+(r.cfg.read ? Math.round(r.cfg.read/60)+' minutes' : 'untimed')+' to read and '+Math.round((r.cfg.present||0)/60)+' minutes to present. Calibrate the depth to that: a 3-minute answer cannot carry three pillars; a 10-minute one must.\n'+
+          'Return ONLY JSON:\n'+
+          '{"readFor":[{"cue":"the specific thing in the passage to notice","why":"why it matters to the answer"}],'+
+          '"numbers":[{"figure":"the exact figure from the exhibit","meaning":"what it rules in or out"}],'+
+          '"spine":{"recommendation":"the one-sentence answer a strong candidate lands on","pillars":[{"claim":"...","evidence":"the number or fact that proves it","soWhat":"the implication"}]},'+
+          '"script":"a model spoken presentation, written to be said aloud in exactly the time they had. Natural spoken English, first person, no headings, no bullet points.",'+
+          '"delivery":["how to say it — pace, emphasis, what to do with silence"],'+
+          '"marks":["what the panel is actually scoring here"],'+
+          '"traps":["what weak candidates do on this specific case"]}',
+        schema:'{"readFor":[{"cue":string,"why":string}],"numbers":[{"figure":string,"meaning":string}],"spine":{"recommendation":string,"pillars":[{"claim":string,"evidence":string,"soWhat":string}]},"script":string,"delivery":[string],"marks":[string],"traps":[string]}',
+        messages:[{role:'user', content:
+          'CASE: '+r.title+' ('+r.sector+')\n\nPASSAGE:\n'+((caseDef.passage||'').slice(0,4000))+
+          '\n\nEXHIBIT:\n'+((caseDef.exhibit&&caseDef.exhibit.rows)||[]).map(function(x){return x[0]+': '+x[1];}).join('\n')+
+          '\n\nTASK: '+r.task+
+          '\n\nANGLES THE PANEL CARES ABOUT:\n'+((caseDef.angles)||[]).map(function(a){return '- '+a;}).join('\n')+
+          '\n\nFOR CONTEXT, WHAT THIS CANDIDATE ACTUALLY SAID (so you can aim the guidance):\n'+(r.transcript||'').slice(0,1500)}],
+        maxTokens:3500
+      }).then(function(d){
+        if (!d || !d.spine) throw new Error('The model did not return a method. Try again.');
+        if (store) store['__method'] = d;
+        var recId = (S.replay && S.replay.id) || S.lastSessionId;
+        if (recId) persistCoach({id:recId}, '__method', d);
+        draw(d);
+      }).catch(function(e){
+        clear(box);
+        box.appendChild(h('div',{cls:'err'},[ h('span',{text:(e&&e.message)||'Could not build the method.'}),
+          btn('Retry',{variant:'subtle', icon:'redo', onclick:load}) ]));
+      });
+    }
+    box.appendChild(h('div',{cls:'card pad', style:'display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap'},[
+      h('div',{style:'min-width:0'},[
+        h('div',{style:'font-size:14px;margin-bottom:3px', text:'The model approach for this case'}),
+        h('div',{cls:'faint', style:'font-size:12.5px;line-height:1.5', text:'What to notice while reading, which numbers decide it, the spine to use, and a model answer written for your '+Math.round((r.cfg.present||0)/60)+'-minute slot. One API call; saved afterwards.'})
+      ]),
+      loadBtn
+    ]));
+  }
+
+  function draw(d){
+    clear(box);
+    var wrap = h('div',{style:'display:flex;flex-direction:column;gap:14px'});
+
+    if (d.readFor && d.readFor.length){
+      var rc = h('div',{cls:'card', style:'padding:18px 20px'});
+      rc.appendChild(eyebrow('While reading, the things to catch','teal'));
+      var ul = h('div',{style:'margin-top:12px;display:flex;flex-direction:column;gap:11px'});
+      d.readFor.forEach(function(x){
+        ul.appendChild(h('div',{style:'display:flex;gap:10px'},[
+          h('span',{style:'color:var(--teal);flex-shrink:0', text:'—'}),
+          h('div',{},[ h('div',{style:'font-size:13.8px;line-height:1.5', text:x.cue}),
+                       h('div',{cls:'faint', style:'font-size:12.5px;line-height:1.45;margin-top:3px', text:x.why}) ])
+        ]));
+      });
+      rc.appendChild(ul); wrap.appendChild(rc);
+    }
+
+    if (d.numbers && d.numbers.length){
+      var nc = h('div',{cls:'card', style:'padding:18px 20px'});
+      nc.appendChild(eyebrow('The numbers that decide it','gold'));
+      var nl = h('div',{style:'margin-top:12px'});
+      d.numbers.forEach(function(x){
+        nl.appendChild(h('div',{style:'display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--lineSoft)'},[
+          h('div',{cls:'mono', style:'font-size:12px;color:var(--gold);flex-shrink:0;width:130px', text:x.figure}),
+          h('div',{style:'font-size:13px;line-height:1.5', text:x.meaning})
+        ]));
+      });
+      nc.appendChild(nl); wrap.appendChild(nc);
+    }
+
+    if (d.spine){
+      var sc = h('div',{cls:'card', style:'padding:18px 20px'});
+      sc.appendChild(eyebrow('The spine','gold'));
+      sc.appendChild(h('p',{cls:'quote', style:'margin:11px 0 0;font-size:16px;line-height:1.5;color:var(--gold)', text:'"'+(d.spine.recommendation||'')+'"'}));
+      (d.spine.pillars||[]).forEach(function(p, i){
+        sc.appendChild(h('div',{style:'margin-top:14px;padding-left:13px;border-left:2px solid var(--goldDim)'},[
+          h('div',{cls:'mono faint', style:'font-size:10px;letter-spacing:.1em;margin-bottom:4px', text:'PILLAR '+(i+1)}),
+          h('div',{style:'font-size:14px;line-height:1.5;margin-bottom:5px', text:p.claim}),
+          h('div',{cls:'mono', style:'font-size:12px;color:var(--teal);margin-bottom:4px', text:p.evidence}),
+          h('div',{cls:'muted', style:'font-size:12.8px;line-height:1.5', text:'So what: '+(p.soWhat||'')})
+        ]));
+      });
+      wrap.appendChild(sc);
+    }
+
+    if (d.script){
+      var pc = h('div',{cls:'rewrite'});
+      pc.appendChild(h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:11px'},[
+        h('span',{html:icon('quote',15,'var(--gold)')}),
+        eyebrow('Say it roughly like this · '+Math.round((r.cfg.present||0)/60)+' min','gold') ]));
+      String(d.script).split('\n\n').forEach(function(p){
+        pc.appendChild(h('p',{style:'margin:0 0 12px;font-size:14.5px;line-height:1.68;font-family:var(--serif)', text:p}));
+      });
+      var wc = words(d.script);
+      pc.appendChild(h('div',{cls:'mono faint', style:'font-size:11px;border-top:1px solid var(--lineSoft);padding-top:9px;margin-top:2px',
+        text: wc+' words · about '+(Math.round(wc/130*10)/10)+' min at a calm 130 wpm'}));
+      wrap.appendChild(pc);
+    }
+
+    var three = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr'});
+    if (d.delivery && d.delivery.length) three.appendChild(listCard('How to say it', d.delivery, 'teal'));
+    if (d.marks && d.marks.length) three.appendChild(listCard('Where the marks are', d.marks, 'gold'));
+    if (three.children.length) wrap.appendChild(three);
+    if (d.traps && d.traps.length) wrap.appendChild(listCard('What weak candidates do here', d.traps, 'gold'));
+
+    box.appendChild(wrap);
+  }
+  return card;
 }
 
 function providerDef(id){ return PROVIDERS.filter(function(p){return p.id===id;})[0] || PROVIDERS[0]; }
@@ -2144,6 +2451,7 @@ function persistSession(rec){
     var all = store.get('room:sessions', []) || [];
     if (all.length && rec.date - all[all.length-1].date < 4000 && all[all.length-1].who === rec.who) return;
     rec.id = 's'+rec.date;
+    S.lastSessionId = rec.id;
     all.push(rec);
     all = all.slice(-40);
     // Full reports carry transcripts, so they're big. If localStorage rejects the
@@ -2461,7 +2769,7 @@ function backBtn(to){
 function viewSetup(){
   var mode = S.session.mode;
   var st = { cv:'', jd:'', company:'', scenarioId:SCENARIOS[0].id, context:'', interviewerId:INTERVIEWERS[0].id, turns:8,
-             mix: store.get('room:mix', 'even') };
+             mix: store.get('room:mix', 'even'), focus:'general', mins:0 };
   var root = h('div',{style:'padding-top:40px', cls:'narrow'});
   root.appendChild(backBtn('home'));
   root.appendChild(stepper(1));
@@ -2509,22 +2817,63 @@ function viewSetup(){
   }
   root.appendChild(body);
 
+  // ---- focus: general vs behavioural-only (interview mode only)
+  var focusWrap = h('div',{style:'margin-top:26px'});
+  if (mode === 'interview'){
+    focusWrap.appendChild(eyebrow('Interview type'));
+    var frow = h('div',{cls:'row', style:'margin-top:12px'});
+    [{id:'general', label:'General', note:'Mixed — motivation, experience, role depth'},
+     {id:'behavioural', label:'Behavioural only', note:'Competency questions, scored on STAR'}].forEach(function(f){
+      frow.appendChild(h('button',{cls:'chip '+(st.focus===f.id?'on':''), onclick:function(){
+        st.focus = f.id;
+        Array.prototype.forEach.call(frow.children,function(c){c.className='chip';});
+        this.className='chip on';
+        drawLength();
+      }},[ h('div',{style:'font-size:14.5px;font-weight:500', text:f.label}),
+           h('div',{cls:'faint', style:'font-size:11.5px;margin-top:2px', text:f.note}) ]));
+    });
+    focusWrap.appendChild(frow);
+    root.appendChild(focusWrap);
+  }
+
   var lenWrap = h('div',{style:'margin-top:26px'});
-  lenWrap.appendChild(eyebrow('Length'));
-  var lrow = h('div',{cls:'row', style:'margin-top:12px'});
-  LENGTHS.forEach(function(l){
-    lrow.appendChild(h('button',{cls:'chip '+(l.turns===st.turns?'on':''), onclick:function(){
-      st.turns = l.turns;
-      Array.prototype.forEach.call(lrow.children,function(c){c.className='chip';});
-      this.className='chip on';
-    }},[ h('div',{style:'font-size:14.5px;font-weight:500', text:l.label}),
-         h('div',{cls:'mono faint', style:'font-size:11px;margin-top:2px', text:l.note}) ]));
-  });
-  lenWrap.appendChild(lrow); root.appendChild(lenWrap);
+  root.appendChild(lenWrap);
+  function drawLength(){
+    clear(lenWrap);
+    var behav = (mode==='interview' && st.focus==='behavioural');
+    lenWrap.appendChild(eyebrow(behav ? 'How long have you got?' : 'Length'));
+    if (behav) lenWrap.appendChild(h('div',{cls:'faint', style:'font-size:12.5px;margin:4px 0 0;line-height:1.5',
+      text:'A proper STAR answer takes 1.5–2 minutes, so the question count follows from the time. Every question comes from a different competency.'}));
+    var lrow = h('div',{cls:'row', style:'margin-top:12px'});
+    if (behav){
+      if (!BEHAV_TIMES.some(function(b){ return b.turns===st.turns; })) st.turns = 20;
+      BEHAV_TIMES.forEach(function(b){
+        lrow.appendChild(h('button',{cls:'chip '+(b.turns===st.turns?'on':''), onclick:function(){
+          st.turns = b.turns; st.mins = b.min;
+          Array.prototype.forEach.call(lrow.children,function(c){c.className='chip';});
+          this.className='chip on';
+        }},[ h('div',{style:'font-size:14.5px;font-weight:500', text:b.min+' min'}),
+             h('div',{cls:'mono faint', style:'font-size:11px;margin-top:2px', text:b.note}) ]));
+      });
+    } else {
+      if (!LENGTHS.some(function(l){ return l.turns===st.turns; })) st.turns = 8;
+      LENGTHS.forEach(function(l){
+        lrow.appendChild(h('button',{cls:'chip '+(l.turns===st.turns?'on':''), onclick:function(){
+          st.turns = l.turns;
+          Array.prototype.forEach.call(lrow.children,function(c){c.className='chip';});
+          this.className='chip on';
+        }},[ h('div',{style:'font-size:14.5px;font-weight:500', text:l.label}),
+             h('div',{cls:'mono faint', style:'font-size:11px;margin-top:2px', text:l.note}) ]));
+      });
+    }
+    lenWrap.appendChild(lrow);
+  }
+  drawLength();
 
   var goBtn = btn('Enter the room',{icon:'door', onclick:function(){
     var cfg = mode==='interview'
-      ? {mode:mode, cv:st.cv, jd:st.jd, company:st.company, interviewerId:st.interviewerId, plannedTurns:st.turns, transcript:[], mix:st.mix}
+      ? {mode:mode, cv:st.cv, jd:st.jd, company:st.company, interviewerId:st.interviewerId, plannedTurns:st.turns, transcript:[], mix:st.mix,
+         behavioural: st.focus==='behavioural', mins: st.mins}
       : {mode:mode, scenarioId:st.scenarioId, context:st.context, plannedTurns:st.turns, transcript:[]};
     S.session = cfg; go('room');
   }});
@@ -2612,7 +2961,15 @@ function buildSystem(sess, docCtx, closing){
       "- React to their LAST answer. If it's vague or unsupported, probe or challenge it. If it's strong, acknowledge briefly and go deeper.\n"+
       '- Reference earlier answers when natural. Occasionally take a note, pause, or mildly disagree.\n'+
       '- Sometimes say very little and let a silence invite them to keep talking.\n'+
-      '- Move naturally across: motivation, real experience, a specific project, a challenge or failure, teamwork, and role-specific depth.\n'+
+      (sess.behavioural
+        ? '\nTHIS IS A BEHAVIOURAL (COMPETENCY) INTERVIEW. Rules that override the above:\n'+
+          '- EVERY question must ask for a SPECIFIC PAST EXAMPLE. Use openers like "Tell me about a time...", "Give me an example of...", "Walk me through a situation where...", "Describe an occasion when...".\n'+
+          '- Never ask hypotheticals ("what would you do if"), never ask opinion questions, never ask about strengths in the abstract.\n'+
+          '- Each question must come from a DIFFERENT competency. Do not ask two questions about the same theme.\n'+
+          '- You are listening for STAR: situation, task, action, result. If their answer skips what THEY personally did, or ends with no outcome, your follow-up must dig for exactly that missing piece — e.g. "and what was your role in that specifically?" or "what happened in the end — did the number move?". This is your single most important job.\n'+
+          '- Keep your own turns short. They should be talking, not you.\n'+
+          'Competencies to draw from (pick unused ones):\n'+ BEHAV_COMPETENCIES.map(function(c){return '  - '+c;}).join('\n') + '\n'
+        : '- Move naturally across: motivation, real experience, a specific project, a challenge or failure, teamwork, and role-specific depth.\n')+
       (closing?'- This is the FINAL moment. Wrap up warmly, thank them, say you will be in touch. kind must be "closing".\n':'')+
       planBlock(sess)+
       '\nOutput ONLY a JSON object, no other text:\n'+
@@ -2924,14 +3281,24 @@ function fillerChips(hits){
    fill any gaps with a local estimate from the measured stats.        */
 function localScores(st){
   // st: {answers, avgWords, avgSec, fillers, totalWords}
-  var depth = Math.min(100, 30 + (st.avgWords||0) * 0.9);            // substance
+  // Deliberately capped well below 100: this is a crude proxy from length, pace
+  // and filler rate. Reporting a 94 because someone talked for a long time would
+  // be actively misleading, so the ceiling is 78.
+  var depth = Math.min(78, 28 + (st.avgWords||0) * 0.32);            // substance
   var fillRate = st.totalWords ? (st.fillers / st.totalWords) * 100 : 0;
-  var clean = Math.max(30, 100 - fillRate * 12);                     // filler penalty
-  var pace = st.avgSec ? Math.max(35, 100 - Math.abs(st.avgSec - 75) * 0.6) : 60;
+  var clean = Math.max(30, Math.min(78, 82 - fillRate * 12));        // filler penalty
+  var pace = st.avgSec ? Math.max(35, Math.min(78, 80 - Math.abs(st.avgSec - 75) * 0.4)) : 55;
   var base = Math.round((depth + clean + pace) / 3);
+  // STAR cannot be judged from length or pace — only a model reading the words
+  // can see whether a Result was given. Estimate these LOW so a missing score is
+  // never mistaken for a good one.
+  var starGuess = Math.min(base, 55);
   return { overall:base, confidence:clean, clarity:base, storytelling:depth,
     executivePresence:base, technical:base, leadership:base, listening:base,
-    structure:base, pacing:pace, engagement:base, vocalEnergy:base };
+    structure:base, pacing:pace, engagement:base, vocalEnergy:base,
+    situation:starGuess, task:starGuess, action:starGuess, result:starGuess,
+    specificity:starGuess, ownership:starGuess,
+    commercialJudgement:base, useOfData:base, recommendation:base, presence:base };
 }
 function normalizeScores(a, stats, keys){
   var src = (a && typeof a.scores === 'object' && a.scores) ? a.scores : (a || {});
@@ -2942,7 +3309,9 @@ function normalizeScores(a, stats, keys){
     if (isFinite(v) && v > 0){ out[k] = clamp(v); got++; }
     else out[k] = clamp(fb[k] !== undefined ? fb[k] : fb.overall);
   });
-  return { scores: out, estimated: got === 0 };
+  // Flag as estimated if the model returned nothing usable, or filled in fewer
+  // than half the dimensions — a half-scored report is still partly guesswork.
+  return { scores: out, estimated: got === 0 || got < keys.length / 2 };
 }
 
 function viewReport(){
@@ -2966,7 +3335,10 @@ function viewReport(){
   var kind = sess.mode==='interview' ? 'job interview' : 'workplace conversation';
   var text = sess.transcript.map(function(t){ return (t.by==='me'?'CANDIDATE':'INTERVIEWER')+': '+t.text; }).join('\n\n');
   var stats = { answers:mine.length, avgWords:avgW, avgSec:avgS, fillers:totF, totalWords:totW };
-  var SCORE_KEYS = ['overall','confidence','clarity','storytelling','executivePresence','technical','leadership','listening'];
+  var behav = !!sess.behavioural;
+  var SCORE_KEYS = behav
+    ? ['overall','situation','task','action','result','specificity','ownership','clarity']
+    : ['overall','confidence','clarity','storytelling','executivePresence','technical','leadership','listening'];
   var liveCoach = {};
 
   // Nothing was said — there is nothing to score. Say so plainly.
@@ -2986,12 +3358,24 @@ function viewReport(){
 
   // ONE call does scoring AND voice-profile learning (was two — halves free-tier usage).
   (replay ? Promise.resolve(replay.report) : callJSON({
-    system:'You are an elite communication coach reviewing a practice '+kind+'. Be specific, honest and encouraging.\n'+
-      'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
-      '{"scores":{"overall":75,"confidence":70,"clarity":80,"storytelling":65,"executivePresence":70,"technical":72,"leadership":68,"listening":74},'+
-      '"strengths":["...","...","..."],"improvements":["...","...","..."],"summary":"2-3 sentences on how they came across",'+
-      '"voiceSummary":"one vivid sentence describing how THEY naturally talk","growthAreas":["...","...","..."],"favouritePhrases":["..."]}',
-    schema:'{"scores":{"overall":int,"confidence":int,"clarity":int,"storytelling":int,"executivePresence":int,"technical":int,"leadership":int,"listening":int},"strengths":[3 strings],"improvements":[3 strings],"summary":string,"voiceSummary":string,"growthAreas":[3 strings],"favouritePhrases":[strings]}',
+    system: behav
+      ? 'You are an elite interview coach reviewing a practice BEHAVIOURAL (competency) interview for a Big-4 Strategy and Transactions role. Score how well they used the STAR method across the whole session. Be specific and honest.\n'+
+        STAR_RUBRIC+
+        'Score each STAR letter as an average across all their answers. "specificity" = did they give real, concrete detail rather than generalities. "ownership" = did they say what THEY did rather than what the team did.\n'+
+        'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
+        '{"scores":{"overall":72,"situation":70,"task":55,"action":78,"result":45,"specificity":65,"ownership":60,"clarity":74},'+
+        '"strengths":["...","...","..."],"improvements":["...","...","..."],"summary":"2-3 sentences on how they came across",'+
+        '"starHabit":"the single STAR habit costing them the most marks, and the fix, in 2 sentences",'+
+        '"weakestAnswers":["the questions where STAR broke down most"],'+
+        '"voiceSummary":"one vivid sentence describing how THEY naturally talk","growthAreas":["...","...","..."],"favouritePhrases":["..."]}'
+      : 'You are an elite communication coach reviewing a practice '+kind+'. Be specific, honest and encouraging.\n'+
+        'Return ONLY a JSON object. Every score is a WHOLE NUMBER from 0 to 100. Do not omit any key.\n'+
+        '{"scores":{"overall":75,"confidence":70,"clarity":80,"storytelling":65,"executivePresence":70,"technical":72,"leadership":68,"listening":74},'+
+        '"strengths":["...","...","..."],"improvements":["...","...","..."],"summary":"2-3 sentences on how they came across",'+
+        '"voiceSummary":"one vivid sentence describing how THEY naturally talk","growthAreas":["...","...","..."],"favouritePhrases":["..."]}',
+    schema: behav
+      ? '{"scores":{"overall":int,"situation":int,"task":int,"action":int,"result":int,"specificity":int,"ownership":int,"clarity":int},"strengths":[3 strings],"improvements":[3 strings],"summary":string,"starHabit":string,"weakestAnswers":[strings],"voiceSummary":string,"growthAreas":[3 strings],"favouritePhrases":[strings]}'
+      : '{"scores":{"overall":int,"confidence":int,"clarity":int,"storytelling":int,"executivePresence":int,"technical":int,"leadership":int,"listening":int},"strengths":[3 strings],"improvements":[3 strings],"summary":string,"voiceSummary":string,"growthAreas":[3 strings],"favouritePhrases":[strings]}',
     messages:[{role:'user', content:'TRANSCRIPT:\n'+text+'\n\nMEASURED: '+mine.length+' answers, avg '+avgW+' words, avg '+avgS+'s each, '+totF+' filler words.'}],
     maxTokens:1600
   })).then(function(a){
@@ -3016,9 +3400,9 @@ function viewReport(){
     var whoName = sess.mode==='interview'
       ? (INTERVIEWERS.filter(function(x){return x.id===sess.interviewerId;})[0]||{}).name
       : (SCENARIOS.filter(function(x){return x.id===sess.scenarioId;})[0]||{}).name;
-    persistSession({date:Date.now(), mode:sess.mode, who:whoName, overall:a.scores.overall, scores:a.scores,
-      report:a, transcript:sess.transcript, stats:stats, coach:{},
-      sessionRef:{mode:sess.mode, interviewerId:sess.interviewerId, scenarioId:sess.scenarioId}});
+    persistSession({date:Date.now(), mode:sess.mode, who:whoName+(behav?' · behavioural':''), overall:a.scores.overall, scores:a.scores,
+      report:a, transcript:sess.transcript, stats:stats, coach:{}, behavioural:behav,
+      sessionRef:{mode:sess.mode, interviewerId:sess.interviewerId, scenarioId:sess.scenarioId, behavioural:behav}});
     if (a.voiceSummary){
       saveProfile(Object.assign({}, S.profile||{}, {
         voiceSummary:a.voiceSummary, strengths:a.strengths, growthAreas:a.growthAreas,
@@ -3073,13 +3457,36 @@ function viewReport(){
     oc.appendChild(stats); top.appendChild(oc);
 
     var bars = h('div',{cls:'card', style:'padding:20px 22px'});
-    [['Confidence',s.confidence,'var(--gold)'],['Clarity',s.clarity,'var(--teal)'],['Storytelling',s.storytelling,'var(--gold)'],
-     ['Executive presence',s.executivePresence,'var(--teal)'],['Technical communication',s.technical,'var(--gold)'],
-     ['Leadership language',s.leadership,'var(--teal)'],['Listening',s.listening,'var(--gold)']].forEach(function(r){
-      bars.appendChild(scoreBar(r[0],r[1],r[2]));
-    });
+    if (behav){
+      bars.appendChild(h('div',{cls:'mono faint', style:'font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:11px', text:'STAR — averaged across your answers'}));
+      [['S · Situation',s.situation],['T · Task',s.task],['A · Action',s.action],['R · Result',s.result]].forEach(function(r){
+        var v = clamp(r[1]);
+        bars.appendChild(scoreBar(r[0], v, v>=70?'var(--green)':(v>=45?'var(--gold)':'var(--rose)')));
+      });
+      bars.appendChild(h('div',{style:'height:1px;background:var(--lineSoft);margin:14px 0'}));
+      [['Specificity',s.specificity,'var(--teal)'],['Ownership (I vs we)',s.ownership,'var(--gold)'],['Clarity',s.clarity,'var(--teal)']].forEach(function(r){
+        bars.appendChild(scoreBar(r[0],r[1],r[2]));
+      });
+    } else {
+      [['Confidence',s.confidence,'var(--gold)'],['Clarity',s.clarity,'var(--teal)'],['Storytelling',s.storytelling,'var(--gold)'],
+       ['Executive presence',s.executivePresence,'var(--teal)'],['Technical communication',s.technical,'var(--gold)'],
+       ['Leadership language',s.leadership,'var(--teal)'],['Listening',s.listening,'var(--gold)']].forEach(function(r){
+        bars.appendChild(scoreBar(r[0],r[1],r[2]));
+      });
+    }
     top.appendChild(bars);
     root.appendChild(top);
+
+    if (behav && a.starHabit){
+      root.appendChild(h('div',{cls:'card', style:'padding:18px 20px;margin-top:16px;border-color:var(--goldDim)'},[
+        h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:9px'},[
+          h('span',{html:icon('spark',15,'var(--gold)')}), eyebrow('The one habit to fix','gold') ]),
+        h('p',{style:'margin:0;font-size:14.5px;line-height:1.6', text:a.starHabit})
+      ]));
+    }
+    if (behav && a.weakestAnswers && a.weakestAnswers.length){
+      root.appendChild(h('div',{style:'margin-top:14px'},[listCard('Where STAR broke down', a.weakestAnswers, 'gold')]));
+    }
 
     var two = h('div',{cls:'grid twocol', style:'grid-template-columns:1fr 1fr;margin-top:16px'});
     two.appendChild(listCard("What's working", a.strengths, 'teal'));
@@ -3098,7 +3505,11 @@ function viewReport(){
       list.appendChild(coachCard({
         idx:idx, question: prev?prev.text:'Opening', answer:x.t.text,
         difficulty: prev && prev.difficulty, key:'a'+idx, store:coachStore,
-        context: sess.mode==='interview' ? 'a job interview' : 'a workplace conversation'
+        // STAR applies to behavioural interviews and to anything drawn from your
+        // own question bank — those are the competency questions.
+        star: !!sess.behavioural || (prev && prev.source === 'bank'),
+        context: sess.behavioural ? 'a behavioural competency interview for a Big-4 Strategy and Transactions role'
+                                  : (sess.mode==='interview' ? 'a job interview' : 'a workplace conversation')
       }));
     });
     root.appendChild(list);
