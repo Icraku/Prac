@@ -452,7 +452,7 @@ var PROVIDERS = [
   {id:'groq',   label:'Groq - free, fast, open models', def:'llama-3.3-70b-versatile', hint:'gsk_...', where:'console.groq.com', needsProxy:true},
   {id:'gemini', label:'Google - Gemini',                def:'gemini-2.5-flash-lite', hint:'AIza...', where:'aistudio.google.com/apikey', needsProxy:false},
   {id:'anthropic',label:'Anthropic - Claude (paid)',    def:'claude-sonnet-5',  hint:'sk-ant-...', where:'console.anthropic.com', needsProxy:true},
-  {id:'openai', label:'OpenAI-compatible (OpenRouter, Qwen...)', def:'qwen/qwen3-max', hint:'sk-...', where:"your provider's console", needsProxy:false}
+  {id:'openai', label:'OpenAI-compatible (Mistral, OpenRouter...)', def:'mistral-small-latest', hint:'sk-...', where:"your provider's console", needsProxy:false}
 ];
 // Model shortcuts. Free-tier allowances change often — these are starting points.
 var MODEL_PRESETS = {
@@ -473,6 +473,8 @@ var MODEL_PRESETS = {
   openai: []
 };
 var OAI_PRESETS = [
+  {name:'Mistral', url:'https://api.mistral.ai/v1', model:'mistral-small-latest'},
+  {name:'Mistral Large', url:'https://api.mistral.ai/v1', model:'mistral-large-latest'},
   {name:'OpenRouter', url:'https://openrouter.ai/api/v1', model:'qwen/qwen3-max'},
   {name:'OpenRouter (free)', url:'https://openrouter.ai/api/v1', model:'qwen/qwen3-30b-a3b:free'},
   {name:'Qwen (Intl)', url:'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model:'qwen-plus'},
@@ -2298,8 +2300,28 @@ function providerDef(id){ return PROVIDERS.filter(function(p){return p.id===id;}
 
 // Builds the exact provider request. `wantJSON` turns on native JSON mode where
 // the provider supports it — this is what makes reports reliable.
+/* Mistral and Anthropic both reject conversations that don't start with a user
+   message, don't end with one, or contain two same-role messages in a row.
+   OpenAI and Gemini tolerate it, so this used to pass silently. Normalising here
+   means no caller can send an invalid shape to any provider. */
+function normalizeMessages(msgs){
+  var out = [];
+  (msgs || []).forEach(function(m){
+    if (!m || !String(m.content || '').trim()) return;              // drop empties
+    var role = (m.role === 'assistant') ? 'assistant' : 'user';
+    var last = out[out.length - 1];
+    if (last && last.role === role) last.content += '\n\n' + m.content;  // merge runs
+    else out.push({ role: role, content: String(m.content) });
+  });
+  if (!out.length) return [{ role:'user', content:"Let's begin." }];
+  if (out[0].role !== 'user') out.unshift({ role:'user', content:"Let's begin." });
+  if (out[out.length - 1].role !== 'user') out.push({ role:'user', content:'Continue.' });
+  return out;
+}
+
 function buildRequest(system, messages, maxTokens, wantJSON){
   var st = S.settings, p = st.provider, key = (st.apiKey||'').trim(), url, headers, body;
+  messages = normalizeMessages(messages);
 
   if (p === 'gemini'){
     url = 'https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(st.model)+':generateContent?key='+encodeURIComponent(key);
@@ -3211,15 +3233,24 @@ function viewRoom(){
         sess.fuStreak = (sess.fuStreak || 0) + 1;
       }
       transcript.push(entry);
-      setThinking(false);
-      moodTxt.textContent = moodOf(entry.mood).l.toLowerCase();
-      moodDot.style.background = moodOf(entry.mood).c;
-      addBubble(entry);
-      drawQRail();
-      if (entry.kind !== 'silence' && S.settings.hearThem){
-        ring.className='ring speak';
-        var u = speak(entry.text, who.id);
-        if (u) u.onend = function(){ ring.className='ring'; };
+      // Everything below is rendering. If it throws, the turn has ALREADY been
+      // added — so it must not fall through to the network catch, which would
+      // retry the call and resend a conversation that now ends with the
+      // interviewer (a 400 on Mistral and Anthropic).
+      try {
+        setThinking(false);
+        moodTxt.textContent = moodOf(entry.mood).l.toLowerCase();
+        moodDot.style.background = moodOf(entry.mood).c;
+        addBubble(entry);
+        drawQRail();
+        if (entry.kind !== 'silence' && S.settings.hearThem){
+          ring.className='ring speak';
+          var u = speak(entry.text, who.id);
+          if (u) u.onend = function(){ ring.className='ring'; };
+        }
+      } catch(renderErr){
+        setThinking(false);
+        showErr('Displayed that turn with an error: '+renderErr.message, function(){ render(); });
       }
       if (closing) finish();
     })
